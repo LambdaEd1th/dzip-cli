@@ -156,7 +156,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "dzip_cli"
+name = "dzip-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",

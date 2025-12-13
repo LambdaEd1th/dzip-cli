@@ -1,6 +1,6 @@
-# dzip_cli
+# dzip-cli
 
-**dzip_cli** is a high-performance command-line tool written in Rust for unpacking and packing **Marmalade SDK** resource archives (`.dz` / `.dzip`).
+**dzip-cli** is a high-performance command-line tool written in Rust for unpacking and packing **Marmalade SDK** resource archives (`.dz` / `.dzip`).
 
 It is designed to provide robust and accurate parsing capabilities, specifically addressing complex issues found in legacy archives such as compression header correction, implicit directory structure restoration, and split (multi-volume) archive handling.
 
@@ -27,8 +27,8 @@ Ensure you have [Rust and Cargo](https://rustup.rs/) installed on your system.
 1.  **Clone the repository**:
 
     ```bash
-    git clone https://github.com/your-username/dzip_cli.git
-    cd dzip_cli
+    git clone https://github.com/your-username/dzip-cli.git
+    cd dzip-cli
     ```
 
 2.  **Build release version**:
@@ -38,7 +38,7 @@ Ensure you have [Rust and Cargo](https://rustup.rs/) installed on your system.
     ```
 
 3.  **Run**:
-    The compiled binary will be located at `./target/release/dzip_cli` (or `dzip_cli.exe` on Windows).
+    The compiled binary will be located at `./target/release/dzip-cli` (or `dzip-cli.exe` on Windows).
 
 ## 📖 Usage
 
@@ -48,10 +48,10 @@ Reads a `.dz` file, extracts its content to a folder, and generates a `.toml` co
 
 ```bash
 # Basic usage (extracts to a folder named after the input file)
-dzip_cli unpack sample.dz
+dzip-cli unpack sample.dz
 
 # Specify a custom output directory
-dzip_cli unpack sample.dz --outdir my_output_folder
+dzip-cli unpack sample.dz --outdir my_output_folder
 ```
 
 **Output artifacts:**
@@ -65,7 +65,7 @@ Reads a `.toml` configuration file, reads source files from the corresponding re
 
 ```bash
 # Just provide the config file
-dzip_cli pack sample.toml
+dzip-cli pack sample.toml
 ```
 
 **Note**: The packer automatically looks for a resource folder with the same name as the config file in the same directory (e.g., `sample.toml` corresponds to the `sample/` folder).

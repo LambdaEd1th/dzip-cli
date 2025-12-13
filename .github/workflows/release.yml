@@ -10,7 +10,7 @@ on:
 
 env:
   # TODO: Replace with your actual binary name as defined in Cargo.toml
-  BIN_NAME: dzip_cli
+  BIN_NAME: dzip-cli
 
 jobs:
   build-and-upload:

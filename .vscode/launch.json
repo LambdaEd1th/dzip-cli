@@ -5,25 +5,25 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Debug executable 'dzip_cli'",
+            "name": "Debug executable 'dzip-cli'",
             "type": "lldb",
             "request": "launch",
             "cargo": {
                 "args": [
                     "run",
-                    "--bin=dzip_cli"
+                    "--bin=dzip-cli"
                 ]
             },
             "args": []
         },
         {
-            "name": "Debug unit tests in executable 'dzip_cli'",
+            "name": "Debug unit tests in executable 'dzip-cli'",
             "type": "lldb",
             "request": "launch",
             "cargo": {
                 "args": [
                     "test",
-                    "--bin=dzip_cli"
+                    "--bin=dzip-cli"
                 ]
             }
         }
