@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use log::error;
 use std::path::PathBuf;
 
 mod compression;
@@ -30,6 +31,10 @@ enum Commands {
         /// Output directory (optional)
         #[arg(short, long)]
         outdir: Option<PathBuf>,
+        
+        /// Keep raw compressed data for unsupported chunks (e.g. CHUNK_DZ)
+        #[arg(long)]
+        keep_raw: bool,
     },
     /// Pack a directory based on a TOML config
     Pack {
@@ -39,15 +44,18 @@ enum Commands {
 }
 
 fn main() {
+    // 初始化 Logger
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+
     let args = Cli::parse();
 
     let res = match args.command {
-        Commands::Unpack { input, outdir } => unpack::do_unpack(&input, outdir),
+        Commands::Unpack { input, outdir, keep_raw } => unpack::do_unpack(&input, outdir, keep_raw),
         Commands::Pack { config } => pack::do_pack(&config),
     };
 
     if let Err(e) = res {
-        eprintln!("[Error] {:#}", e);
+        error!("{:#}", e);
         std::process::exit(1);
     }
 }

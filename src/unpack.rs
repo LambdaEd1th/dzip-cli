@@ -1,18 +1,20 @@
 use anyhow::{Result, anyhow};
 use byteorder::{LittleEndian, ReadBytesExt};
+use log::{debug, info, warn};
 use std::collections::{HashMap, hash_map::Entry};
 use std::fs::{self, File};
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{MAIN_SEPARATOR_STR, PathBuf};
 
 use crate::compression::decompress_chunk;
 use crate::constants::{CHUNK_DZ, MAGIC};
 use crate::types::{ArchiveMeta, ChunkDef, Config, FileEntry, RangeSettings};
-use crate::utils::{decode_flags, read_null_term_string};
+use crate::utils::{decode_flags, read_null_term_string, sanitize_path};
 
-pub fn do_unpack(input_path: &PathBuf, out_opt: Option<PathBuf>) -> Result<()> {
-    let mut main_file = File::open(input_path)?;
-    let main_file_len = main_file.metadata()?.len();
+pub fn do_unpack(input_path: &PathBuf, out_opt: Option<PathBuf>, keep_raw: bool) -> Result<()> {
+    let main_file_raw = File::open(input_path)?;
+    let main_file_len = main_file_raw.metadata()?.len();
+    let mut main_file = BufReader::new(main_file_raw);
 
     // 1. Read Header
     let magic = main_file.read_u32::<LittleEndian>()?;
@@ -23,8 +25,8 @@ pub fn do_unpack(input_path: &PathBuf, out_opt: Option<PathBuf>) -> Result<()> {
     let num_dirs = main_file.read_u16::<LittleEndian>()?;
     let version = main_file.read_u8()?;
 
-    println!(
-        "[Info] Header: Ver {}, Files {}, Dirs {}",
+    info!(
+        "Header: Ver {}, Files {}, Dirs {}",
         version, num_files, num_dirs
     );
 
@@ -35,7 +37,6 @@ pub fn do_unpack(input_path: &PathBuf, out_opt: Option<PathBuf>) -> Result<()> {
     }
 
     let mut directories = Vec::new();
-    // Rule: First directory is implicit ""
     directories.push("".to_string());
     for _ in 0..(num_dirs - 1) {
         directories.push(read_null_term_string(&mut main_file)?);
@@ -68,8 +69,8 @@ pub fn do_unpack(input_path: &PathBuf, out_opt: Option<PathBuf>) -> Result<()> {
     // 4. Chunk Settings
     let num_arch_files = main_file.read_u16::<LittleEndian>()?;
     let num_chunks = main_file.read_u16::<LittleEndian>()?;
-    println!(
-        "[Info] Chunk Settings: {} chunks in {} archive files",
+    info!(
+        "Chunk Settings: {} chunks in {} archive files",
         num_chunks, num_arch_files
     );
 
@@ -109,13 +110,11 @@ pub fn do_unpack(input_path: &PathBuf, out_opt: Option<PathBuf>) -> Result<()> {
         });
     }
 
-    // 6. File List (Multiple Archive Support)
+    // 6. Split Filenames
     let mut split_file_names = Vec::new();
     if num_arch_files > 1 {
-        println!(
-            "[Info] Reading {} split archive filenames...",
-            num_arch_files - 1
-        );
+        // [修改] 使用 info!
+        info!("Reading {} split archive filenames...", num_arch_files - 1);
         for _ in 0..(num_arch_files - 1) {
             split_file_names.push(read_null_term_string(&mut main_file)?);
         }
@@ -124,7 +123,8 @@ pub fn do_unpack(input_path: &PathBuf, out_opt: Option<PathBuf>) -> Result<()> {
     // 7. Decoder Settings
     let mut range_settings_opt = None;
     if has_dz_chunk {
-        println!("[Info] Detected CHUNK_DZ, reading RangeSettings...");
+        // [修改] 使用 info!
+        info!("Detected CHUNK_DZ, reading RangeSettings...");
         range_settings_opt = Some(RangeSettings {
             win_size: main_file.read_u8()?,
             flags: main_file.read_u8()?,
@@ -139,10 +139,8 @@ pub fn do_unpack(input_path: &PathBuf, out_opt: Option<PathBuf>) -> Result<()> {
         });
     }
 
-    // --- Prepare ---
+    // --- Prepare (ZSIZE Correction) ---
     let base_dir = input_path.parent().unwrap_or(std::path::Path::new("."));
-
-    // Calculate sizes per file
     let mut file_chunks_map: HashMap<u16, Vec<usize>> = HashMap::new();
     for (idx, c) in chunks.iter().enumerate() {
         file_chunks_map.entry(c.file_idx).or_default().push(idx);
@@ -168,9 +166,8 @@ pub fn do_unpack(input_path: &PathBuf, out_opt: Option<PathBuf>) -> Result<()> {
             } else {
                 chunks[sorted_indices[k + 1]].offset
             };
-
             if next_offset < current_offset {
-                chunks[idx].real_c_len = chunks[idx]._head_c_len; // Fallback
+                chunks[idx].real_c_len = chunks[idx]._head_c_len;
             } else {
                 chunks[idx].real_c_len = next_offset - current_offset;
             }
@@ -182,15 +179,17 @@ pub fn do_unpack(input_path: &PathBuf, out_opt: Option<PathBuf>) -> Result<()> {
         chunk_map.insert(c.id, c.clone());
     }
 
-    // Output setup
     let base_name = input_path.file_stem().unwrap().to_string_lossy();
     let root_out = out_opt.unwrap_or_else(|| PathBuf::from(&base_name.to_string()));
     fs::create_dir_all(&root_out)?;
 
-    // 7. Extraction
-    println!("[Info] Extracting {} files...", map_entries.len());
+    // 8. Extraction
+    info!(
+        "Extracting {} files to {:?}...",
+        map_entries.len(),
+        root_out
+    );
     let mut toml_files = Vec::new();
-
     let mut split_handles: HashMap<u16, File> = HashMap::new();
 
     for entry in &map_entries {
@@ -201,74 +200,84 @@ pub fn do_unpack(input_path: &PathBuf, out_opt: Option<PathBuf>) -> Result<()> {
             ""
         };
 
-        // FIX: Combine replace calls into one
-        let system_dir = raw_dir.replace(['\\', '/'], MAIN_SEPARATOR_STR);
-
-        let final_dir = if system_dir.is_empty() {
-            "".to_string()
-        } else {
-            system_dir
-        };
-
-        let rel_path = if final_dir.is_empty() {
+        let full_raw_path = if raw_dir.is_empty() {
             fname.clone()
         } else {
-            format!(
-                "{}{}{}",
-                final_dir.trim_end_matches(MAIN_SEPARATOR_STR),
-                MAIN_SEPARATOR_STR,
-                fname
-            )
+            format!("{}/{}", raw_dir, fname)
         };
 
-        let disk_path = root_out.join(&rel_path);
+        let disk_path = sanitize_path(&root_out, &full_raw_path)?;
+
+        let rel_path_display = full_raw_path.replace(['/', '\\'], MAIN_SEPARATOR_STR);
+        let dir_display = raw_dir.replace(['/', '\\'], MAIN_SEPARATOR_STR);
+
+        debug!("Processing: {}", rel_path_display);
+
         if let Some(parent) = disk_path.parent() {
             fs::create_dir_all(parent)?;
         }
 
-        let mut file_buf = Vec::new();
+        let out_file = File::create(&disk_path)?;
+        let mut writer = BufWriter::new(out_file);
+
         for cid in &entry.chunk_ids {
             if let Some(chunk) = chunk_map.get(cid) {
-                // Reader selection
-                let reader: &mut File = if chunk.file_idx == 0 {
-                    &mut main_file
+                let mut raw_data = vec![0u8; chunk.real_c_len as usize];
+
+                if chunk.file_idx == 0 {
+                    main_file.seek(SeekFrom::Start(chunk.offset as u64))?;
+                    main_file.read_exact(&mut raw_data)?;
                 } else {
                     match split_handles.entry(chunk.file_idx) {
-                        Entry::Occupied(e) => e.into_mut(),
+                        Entry::Occupied(mut e) => {
+                            e.get_mut().seek(SeekFrom::Start(chunk.offset as u64))?;
+                            e.get_mut().read_exact(&mut raw_data)?;
+                        }
                         Entry::Vacant(e) => {
                             let f_name = &split_file_names[(chunk.file_idx - 1) as usize];
                             let f_path = base_dir.join(f_name);
-                            let f = File::open(&f_path)
+                            let mut f = File::open(&f_path)
                                 .map_err(|e| anyhow!("Missing split file {:?}: {}", f_path, e))?;
-                            e.insert(f)
+                            f.seek(SeekFrom::Start(chunk.offset as u64))?;
+                            f.read_exact(&mut raw_data)?;
+                            e.insert(f);
                         }
                     }
                 };
 
-                reader.seek(SeekFrom::Start(chunk.offset as u64))?;
-                let mut raw_data = vec![0u8; chunk.real_c_len as usize];
-                reader.read_exact(&mut raw_data)?;
-
                 match decompress_chunk(&raw_data, chunk.flags, chunk.d_len) {
-                    Ok(decompressed) => file_buf.extend_from_slice(&decompressed),
+                    Ok(decompressed) => writer.write_all(&decompressed)?,
                     Err(e) => {
-                        eprintln!("[Warn] Failed to decompress file {}: {}", rel_path, e);
-                        file_buf.extend_from_slice(&raw_data);
+                        if (chunk.flags & CHUNK_DZ != 0) && keep_raw {
+                            info!(
+                                "Keeping raw data for chunk {} (DZ_RANGE) in {}",
+                                chunk.id, rel_path_display
+                            );
+                            writer.write_all(&raw_data)?;
+                        } else if chunk.flags & CHUNK_DZ != 0 {
+                            return Err(anyhow!(
+                                "Unsupported chunk format (DZ_RANGE) in {}. Use --keep-raw.",
+                                rel_path_display
+                            ));
+                        } else {
+                            warn!("Failed to decompress {}: {}", rel_path_display, e);
+                            writer.write_all(&raw_data)?;
+                        }
                     }
                 }
             }
         }
-        fs::write(&disk_path, &file_buf)?;
+        writer.flush()?;
 
         toml_files.push(FileEntry {
-            path: rel_path,
-            directory: final_dir,
+            path: rel_path_display,
+            directory: dir_display,
             filename: fname.clone(),
             chunks: entry.chunk_ids.clone(),
         });
     }
 
-    // 8. Write Config
+    // 9. Write Config
     let mut toml_chunks = Vec::new();
     let mut sorted_chunks_for_toml = chunks;
     sorted_chunks_for_toml.sort_by_key(|c| c.id);
@@ -297,14 +306,8 @@ pub fn do_unpack(input_path: &PathBuf, out_opt: Option<PathBuf>) -> Result<()> {
         chunks: toml_chunks,
     };
 
-    let toml_str = toml::to_string_pretty(&config)?;
     let config_path = format!("{}.toml", base_name);
-    fs::write(&config_path, toml_str)?;
-
-    println!(
-        "[Success] Extracted to {:?} and saved config to {}",
-        root_out, config_path
-    );
-
+    fs::write(&config_path, toml::to_string_pretty(&config)?)?;
+    info!("Unpack complete. Config saved to {}", config_path);
     Ok(())
 }

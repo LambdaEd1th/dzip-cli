@@ -14,7 +14,7 @@ It is designed to provide robust and accurate parsing capabilities, specifically
       * ✅ **BZIP2**
       * ✅ **COPY** (Store / No compression)
       * ✅ **ZERO** (Zero-block generation)
-  * **Split Archives**: Automatically identifies, reads, and writes multi-volume archives (e.g., `data.dz`, `data.d01`, `data.d02`...).
+  * **Split Archives (Experimental)**: Automatically identifies, reads, and writes multi-volume archives (e.g., `data.dz`, `data.d01`, `data.d02`...).
   * **Smart Fixes**:
       * **ZSIZE Correction**: Automatically calculates real compressed sizes from offsets, fixing issues where the header reports incorrect sizes.
       * **Directory Restoration**: Handles the implicit root directory logic specific to Marmalade archives.

@@ -1,6 +1,7 @@
 use crate::constants::*;
-use anyhow::Result;
-use std::io::Read;
+use anyhow::{Result, anyhow};
+use std::io::BufRead;
+use std::path::{Path, PathBuf};
 
 pub fn decode_flags(flags: u16) -> Vec<String> {
     let mut list = Vec::new();
@@ -8,46 +9,22 @@ pub fn decode_flags(flags: u16) -> Vec<String> {
         list.push("COPY".to_string());
         return list;
     }
-
-    if flags & CHUNK_COMBUF != 0 {
-        list.push("COMBUF".to_string());
-    }
-    if flags & CHUNK_DZ != 0 {
-        list.push("DZ_RANGE".to_string());
-    }
-    if flags & CHUNK_ZLIB != 0 {
-        list.push("ZLIB".to_string());
-    }
-    if flags & CHUNK_BZIP != 0 {
-        list.push("BZIP".to_string());
-    }
-    if flags & CHUNK_MP3 != 0 {
-        list.push("MP3".to_string());
-    }
-    if flags & CHUNK_JPEG != 0 {
-        list.push("JPEG".to_string());
-    }
-    if flags & CHUNK_ZERO != 0 {
-        list.push("ZERO".to_string());
-    }
-    if flags & CHUNK_COPYCOMP != 0 {
-        list.push("COPY".to_string());
-    }
-    if flags & CHUNK_LZMA != 0 {
-        list.push("LZMA".to_string());
-    }
-    if flags & CHUNK_RANDOMACCESS != 0 {
-        list.push("RANDOM_ACCESS".to_string());
-    }
-
+    if flags & CHUNK_COMBUF != 0 { list.push("COMBUF".to_string()); }
+    if flags & CHUNK_DZ != 0 { list.push("DZ_RANGE".to_string()); }
+    if flags & CHUNK_ZLIB != 0 { list.push("ZLIB".to_string()); }
+    if flags & CHUNK_BZIP != 0 { list.push("BZIP".to_string()); }
+    if flags & CHUNK_MP3 != 0 { list.push("MP3".to_string()); }
+    if flags & CHUNK_JPEG != 0 { list.push("JPEG".to_string()); }
+    if flags & CHUNK_ZERO != 0 { list.push("ZERO".to_string()); }
+    if flags & CHUNK_COPYCOMP != 0 { list.push("COPY".to_string()); }
+    if flags & CHUNK_LZMA != 0 { list.push("LZMA".to_string()); }
+    if flags & CHUNK_RANDOMACCESS != 0 { list.push("RANDOM_ACCESS".to_string()); }
     list
 }
 
 pub fn encode_flags(flags_vec: &[String]) -> u16 {
     let mut res = 0;
-    if flags_vec.is_empty() {
-        return 0;
-    }
+    if flags_vec.is_empty() { return 0; }
     for f in flags_vec {
         match f.as_str() {
             "COMBUF" => res |= CHUNK_COMBUF,
@@ -69,15 +46,35 @@ pub fn encode_flags(flags_vec: &[String]) -> u16 {
     res
 }
 
-pub fn read_null_term_string<R: Read>(reader: &mut R) -> Result<String> {
+pub fn read_null_term_string<R: BufRead>(reader: &mut R) -> Result<String> {
     let mut bytes = Vec::new();
-    let mut byte = [0u8; 1];
-    loop {
-        reader.read_exact(&mut byte)?;
-        if byte[0] == 0 {
-            break;
-        }
-        bytes.push(byte[0]);
+    reader.read_until(0, &mut bytes)?;
+    if bytes.last() == Some(&0) {
+        bytes.pop();
     }
     Ok(String::from_utf8_lossy(&bytes).to_string())
+}
+
+
+pub fn sanitize_path(base: &Path, rel_path_str: &str) -> Result<PathBuf> {
+    let mut safe_path = PathBuf::new();
+    
+    for part in rel_path_str.split(['/', '\\']) {
+        if part.is_empty() || part == "." {
+            continue;
+        }
+        if part == ".." {
+            return Err(anyhow!("Security Error: Directory traversal (..) detected in path: {}", rel_path_str));
+        }
+        if part.contains(':') {
+            return Err(anyhow!("Security Error: Absolute path or drive letter detected: {}", rel_path_str));
+        }
+        safe_path.push(part);
+    }
+
+    if safe_path.as_os_str().is_empty() {
+        return Err(anyhow!("Invalid empty path resolution: {}", rel_path_str));
+    }
+
+    Ok(base.join(safe_path))
 }

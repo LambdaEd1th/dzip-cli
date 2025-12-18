@@ -6,10 +6,9 @@ pub fn decompress_chunk(data: &[u8], flags: u16, expected_len: u32) -> Result<Ve
     if flags & CHUNK_ZERO != 0 {
         return Ok(vec![0u8; expected_len as usize]);
     }
+
     if flags & CHUNK_DZ != 0 {
-        return Err(anyhow!(
-            "Proprietary Marmalade Range Encoding (CHUNK_DZ) is not supported."
-        ));
+         return Ok(data.to_vec());
     }
 
     if flags & CHUNK_LZMA != 0 {
@@ -45,10 +44,9 @@ pub fn compress_data(data: &[u8], flags: u16) -> Result<Vec<u8>> {
     if flags & CHUNK_ZERO != 0 {
         return Ok(Vec::new());
     }
+
     if flags & CHUNK_DZ != 0 {
-        return Err(anyhow!(
-            "Proprietary Marmalade Range Encoding (CHUNK_DZ) compression is not supported."
-        ));
+        return Ok(data.to_vec());
     }
 
     if flags & CHUNK_LZMA != 0 {
