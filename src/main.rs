@@ -2,6 +2,8 @@ use clap::{Parser, Subcommand};
 use log::error;
 use std::path::PathBuf;
 
+use crate::compression::create_default_registry;
+
 mod compression;
 mod constants;
 mod pack;
@@ -31,7 +33,6 @@ enum Commands {
         /// Output directory (optional)
         #[arg(short, long)]
         outdir: Option<PathBuf>,
-
         /// Keep raw compressed data for unsupported chunks (e.g. CHUNK_DZ)
         #[arg(long)]
         keep_raw: bool,
@@ -48,13 +49,17 @@ fn main() {
 
     let args = Cli::parse();
 
+    // 初始化编解码注册中心 (Hook 扩展点)
+    let registry = create_default_registry();
+    // 如果有自定义的解码器，可在此处 registry.register_decompressor(...)
+
     let res = match args.command {
         Commands::Unpack {
             input,
             outdir,
             keep_raw,
-        } => unpack::do_unpack(&input, outdir, keep_raw),
-        Commands::Pack { config } => pack::do_pack(&config),
+        } => unpack::do_unpack(&input, outdir, keep_raw, &registry),
+        Commands::Pack { config } => pack::do_pack(&config, &registry),
     };
 
     if let Err(e) = res {

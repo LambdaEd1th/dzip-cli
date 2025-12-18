@@ -11,3 +11,6 @@ pub const CHUNK_ZERO: u16 = 0x80;
 pub const CHUNK_COPYCOMP: u16 = 0x100;
 pub const CHUNK_LZMA: u16 = 0x200;
 pub const CHUNK_RANDOMACCESS: u16 = 0x400;
+
+// End marker for the chunk list
+pub const CHUNK_LIST_TERMINATOR: u16 = 0xFFFF;

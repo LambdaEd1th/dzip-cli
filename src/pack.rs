@@ -1,17 +1,17 @@
 use anyhow::{Result, anyhow};
 use byteorder::{LittleEndian, WriteBytesExt};
-use log::{debug, info};
+use log::info;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufWriter, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 
-use crate::compression::compress_data;
-use crate::constants::{CHUNK_DZ, MAGIC};
+use crate::compression::CodecRegistry;
+use crate::constants::{CHUNK_DZ, CHUNK_LIST_TERMINATOR, MAGIC};
 use crate::types::{ChunkDef, Config};
 use crate::utils::encode_flags;
 
-pub fn do_pack(config_path: &PathBuf) -> Result<()> {
+pub fn do_pack(config_path: &PathBuf, registry: &CodecRegistry) -> Result<()> {
     let toml_content = fs::read_to_string(config_path)?;
     let config: Config = toml::from_str(&toml_content)?;
 
@@ -33,7 +33,7 @@ pub fn do_pack(config_path: &PathBuf) -> Result<()> {
         }
     }
 
-    // Step 1: Index Source Files
+    // 1. Index Source Files
     info!("Indexing source files...");
     let mut chunk_source_map: HashMap<u16, (PathBuf, u64, usize)> = HashMap::new();
     for f_entry in &config.files {
@@ -48,7 +48,6 @@ pub fn do_pack(config_path: &PathBuf) -> Result<()> {
                 clean_rel_path.push(part);
             }
         }
-
         let full_path = base_path.join(clean_rel_path);
 
         if !full_path.exists() {
@@ -64,31 +63,32 @@ pub fn do_pack(config_path: &PathBuf) -> Result<()> {
             } else {
                 c_def.size_decompressed
             } as usize;
-
             chunk_source_map.insert(*cid, (full_path.clone(), current_offset, read_len));
             current_offset += read_len as u64;
         }
     }
 
-    // Step 2: Build Preliminary Header
+    // 2. Build Preliminary Header
     let mut unique_dirs = HashSet::new();
     for f in &config.files {
         let d = f.directory.trim();
-        unique_dirs.insert(if d.is_empty() {
-            "".to_string()
+        if d.is_empty() || d == "." {
+            unique_dirs.insert(".".to_string());
         } else {
-            d.replace('\\', "/")
-        });
+            unique_dirs.insert(d.replace('\\', "/"));
+        }
     }
-    if !unique_dirs.contains("") {
-        unique_dirs.insert("".to_string());
+    if !unique_dirs.contains(".") {
+        unique_dirs.insert(".".to_string());
     }
+
     let mut sorted_dirs: Vec<String> = unique_dirs.into_iter().collect();
     sorted_dirs.sort();
 
-    if !sorted_dirs[0].is_empty() {
-        sorted_dirs.insert(0, "".to_string());
+    if let Some(pos) = sorted_dirs.iter().position(|x| x == ".") {
+        sorted_dirs.remove(pos);
     }
+    sorted_dirs.insert(0, ".".to_string());
 
     let dir_map: HashMap<String, usize> = sorted_dirs
         .iter()
@@ -111,13 +111,19 @@ pub fn do_pack(config_path: &PathBuf) -> Result<()> {
         header_buffer.write_u8(0)?;
     }
     for f in &config.files {
-        let d_key = f.directory.replace('\\', "/");
-        let d_id = *dir_map.get(&d_key).unwrap_or(&0) as u16;
+        let raw_d = f.directory.replace('\\', "/");
+        let d_key = if raw_d.is_empty() || raw_d == "." {
+            "."
+        } else {
+            &raw_d
+        };
+
+        let d_id = *dir_map.get(d_key).unwrap_or(&0) as u16;
         header_buffer.write_u16::<LittleEndian>(d_id)?;
         for cid in &f.chunks {
             header_buffer.write_u16::<LittleEndian>(*cid)?;
         }
-        header_buffer.write_u16::<LittleEndian>(0xFFFF)?;
+        header_buffer.write_u16::<LittleEndian>(CHUNK_LIST_TERMINATOR)?;
     }
 
     header_buffer.write_u16::<LittleEndian>((1 + config.archive_files.len()) as u16)?;
@@ -156,7 +162,7 @@ pub fn do_pack(config_path: &PathBuf) -> Result<()> {
         }
     }
 
-    // Step 3: Write Files
+    // 3. Write Files
     let out_filename_0 = format!("{}_packed.dz", base_dir);
     let mut current_offset_0 = header_buffer.position() as u32;
 
@@ -172,13 +178,12 @@ pub fn do_pack(config_path: &PathBuf) -> Result<()> {
         let idx = (i + 1) as u16;
         let path = config_path.parent().unwrap().join(fname);
         info!("Creating split archive: {:?}", path);
-        debug!("Split file index: {}, Path: {:?}", idx, path);
         let f = File::create(&path)?;
         split_writers.insert(idx, BufWriter::new(f));
         split_offsets.insert(idx, 0);
     }
 
-    // Step 4: Stream Data
+    // 4. Stream Data
     info!("Processing chunks (streaming)...");
     let mut sorted_chunks_def = config.chunks.clone();
     sorted_chunks_def.sort_by_key(|c| c.id);
@@ -188,12 +193,23 @@ pub fn do_pack(config_path: &PathBuf) -> Result<()> {
 
         let mut f_in = File::open(source_path)?;
         f_in.seek(SeekFrom::Start(*src_offset))?;
-        let mut buffer = vec![0u8; *read_len];
-        f_in.read_exact(&mut buffer)?;
+        let mut chunk_reader = f_in.take(*read_len as u64);
 
         let flags_int = encode_flags(&c_def.flags);
-        let comp_data = compress_data(&buffer, flags_int)?;
-        let comp_len = comp_data.len() as u32;
+
+        let target_writer = if c_def.archive_file_index == 0 {
+            &mut writer0
+        } else {
+            split_writers.get_mut(&c_def.archive_file_index).unwrap()
+        };
+
+        let start_pos = target_writer.stream_position()?;
+
+        registry.compress(&mut chunk_reader, target_writer, flags_int)?;
+        target_writer.flush()?;
+
+        let end_pos = target_writer.stream_position()?;
+        let comp_len = (end_pos - start_pos) as u32;
 
         c_def.offset = if c_def.archive_file_index == 0 {
             current_offset_0
@@ -203,11 +219,8 @@ pub fn do_pack(config_path: &PathBuf) -> Result<()> {
         c_def.size_compressed = comp_len;
 
         if c_def.archive_file_index == 0 {
-            writer0.write_all(&comp_data)?;
             current_offset_0 += comp_len;
         } else {
-            let w = split_writers.get_mut(&c_def.archive_file_index).unwrap();
-            w.write_all(&comp_data)?;
             *split_offsets.get_mut(&c_def.archive_file_index).unwrap() += comp_len;
         }
     }
@@ -217,7 +230,7 @@ pub fn do_pack(config_path: &PathBuf) -> Result<()> {
         w.flush()?;
     }
 
-    // Step 5: Finalize Header
+    // 5. Finalize Header
     info!("Finalizing header...");
     let mut table_writer = Cursor::new(Vec::new());
     for c in &sorted_chunks_def {

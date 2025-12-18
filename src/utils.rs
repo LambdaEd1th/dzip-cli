@@ -1,7 +1,7 @@
 use crate::constants::*;
 use anyhow::{Result, anyhow};
 use std::io::BufRead;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 pub fn decode_flags(flags: u16) -> Vec<String> {
     let mut list = Vec::new();
@@ -77,26 +77,34 @@ pub fn read_null_term_string<R: BufRead>(reader: &mut R) -> Result<String> {
     Ok(String::from_utf8_lossy(&bytes).to_string())
 }
 
+// Security enhanced version
 pub fn sanitize_path(base: &Path, rel_path_str: &str) -> Result<PathBuf> {
+    let rel_path = Path::new(rel_path_str);
     let mut safe_path = PathBuf::new();
 
-    for part in rel_path_str.split(['/', '\\']) {
-        if part.is_empty() || part == "." {
-            continue;
+    for component in rel_path.components() {
+        match component {
+            // 1. Normal filename: safe, append to path
+            Component::Normal(os_str) => safe_path.push(os_str),
+            // 2. Parent directory (".."): extremely dangerous, must be intercepted
+            Component::ParentDir => {
+                return Err(anyhow!(
+                    "Security Error: Directory traversal (..) detected in path: {}",
+                    rel_path_str
+                ));
+            }
+            // 3. Root directory ("/"): ignore
+            Component::RootDir => continue,
+            // 4. Drive prefix (e.g. "C:"): absolute path or drive letter, forbidden
+            Component::Prefix(_) => {
+                return Err(anyhow!(
+                    "Security Error: Absolute path or drive letter detected: {}",
+                    rel_path_str
+                ));
+            }
+            // 5. Current directory ("."): ignore
+            Component::CurDir => continue,
         }
-        if part == ".." {
-            return Err(anyhow!(
-                "Security Error: Directory traversal (..) detected in path: {}",
-                rel_path_str
-            ));
-        }
-        if part.contains(':') {
-            return Err(anyhow!(
-                "Security Error: Absolute path or drive letter detected: {}",
-                rel_path_str
-            ));
-        }
-        safe_path.push(part);
     }
 
     if safe_path.as_os_str().is_empty() {
