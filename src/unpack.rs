@@ -1,13 +1,14 @@
 use anyhow::{Result, anyhow};
 use byteorder::{LittleEndian, ReadBytesExt};
-use log::{debug, info, warn};
+use log::{info, warn}; // [Fix] Removed unused 'debug'
 use std::collections::{HashMap, hash_map::Entry};
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+// [Fix] Import MAIN_SEPARATOR_STR to adapt path separators for current OS
 use std::path::{MAIN_SEPARATOR_STR, PathBuf};
 
 use crate::compression::CodecRegistry;
-use crate::constants::{CHUNK_DZ, CHUNK_LIST_TERMINATOR, MAGIC};
+use crate::constants::{CHUNK_LIST_TERMINATOR, ChunkFlags, MAGIC}; // [Refactor] Import ChunkFlags
 use crate::types::{ArchiveMeta, ChunkDef, Config, FileEntry, RangeSettings};
 use crate::utils::{decode_flags, read_null_term_string, sanitize_path};
 
@@ -97,10 +98,12 @@ pub fn do_unpack(
         let offset = main_file.read_u32::<LittleEndian>()?;
         let c_len = main_file.read_u32::<LittleEndian>()?;
         let d_len = main_file.read_u32::<LittleEndian>()?;
-        let flags = main_file.read_u16::<LittleEndian>()?;
+        let flags_raw = main_file.read_u16::<LittleEndian>()?;
         let file_idx = main_file.read_u16::<LittleEndian>()?;
 
-        if flags & CHUNK_DZ != 0 {
+        // [Refactor] Use bitflags to check DZ_RANGE
+        let flags = ChunkFlags::from_bits_truncate(flags_raw);
+        if flags.contains(ChunkFlags::DZ_RANGE) {
             has_dz_chunk = true;
         }
 
@@ -109,7 +112,7 @@ pub fn do_unpack(
             offset,
             _head_c_len: c_len,
             d_len,
-            flags,
+            flags: flags_raw,
             file_idx,
             real_c_len: 0,
         });
@@ -177,12 +180,12 @@ pub fn do_unpack(
         }
     }
 
-    let mut chunk_map = HashMap::new();
-    for c in &chunks {
-        chunk_map.insert(c.id, c.clone());
-    }
+    // [Optimization] Map ChunkID -> Vector Index
+    // Instead of cloning the entire RawChunk struct into a HashMap, we store indices.
+    // This reduces memory usage and avoids unnecessary cloning.
+    let chunk_indices: HashMap<u16, usize> =
+        chunks.iter().enumerate().map(|(i, c)| (c.id, i)).collect();
 
-    // Safe handling of input filename
     let base_name = input_path
         .file_stem()
         .ok_or_else(|| anyhow!("Invalid input file path (no stem): {:?}", input_path))?
@@ -214,11 +217,14 @@ pub fn do_unpack(
             format!("{}/{}", raw_dir, fname)
         };
 
+        // [Fix] sanitize_path (in utils.rs) now handles separator normalization.
+        // It ensures the path is created correctly on disk regardless of input separator style.
         let disk_path = sanitize_path(&root_out, &full_raw_path)?;
+
+        // [Fix] Use MAIN_SEPARATOR_STR for display strings (TOML/Logs)
+        // This ensures generated config files use '\' on Windows and '/' on Unix.
         let rel_path_display = full_raw_path.replace(['/', '\\'], MAIN_SEPARATOR_STR);
         let dir_display = raw_dir.replace(['/', '\\'], MAIN_SEPARATOR_STR);
-
-        debug!("Processing: {}", rel_path_display);
 
         if let Some(parent) = disk_path.parent() {
             fs::create_dir_all(parent)?;
@@ -228,7 +234,10 @@ pub fn do_unpack(
         let mut writer = BufWriter::new(out_file);
 
         for cid in &entry.chunk_ids {
-            if let Some(chunk) = chunk_map.get(cid) {
+            // [Optimization] Use index lookup to borrow the chunk
+            if let Some(&idx) = chunk_indices.get(cid) {
+                let chunk = &chunks[idx];
+
                 let mut source_reader: Box<dyn Read> = if chunk.file_idx == 0 {
                     main_file.seek(SeekFrom::Start(chunk.offset as u64))?;
                     Box::new(main_file.by_ref().take(chunk.real_c_len as u64))
@@ -256,14 +265,16 @@ pub fn do_unpack(
                 if let Err(e) =
                     registry.decompress(&mut source_reader, &mut writer, chunk.flags, chunk.d_len)
                 {
-                    drop(source_reader); // Explicit drop for borrow checker
+                    drop(source_reader);
 
-                    if (chunk.flags & CHUNK_DZ != 0) && keep_raw {
+                    // [Refactor] Use bitflags checks
+                    let c_flags = ChunkFlags::from_bits_truncate(chunk.flags);
+
+                    if c_flags.contains(ChunkFlags::DZ_RANGE) && keep_raw {
                         info!(
                             "Keeping raw data for chunk {} (DZ_RANGE) in {}",
                             chunk.id, rel_path_display
                         );
-                        // Re-acquire reader for fallback
                         let mut raw_reader: Box<dyn Read> = if chunk.file_idx == 0 {
                             main_file.seek(SeekFrom::Start(chunk.offset as u64))?;
                             Box::new(main_file.by_ref().take(chunk.real_c_len as u64))
@@ -279,7 +290,7 @@ pub fn do_unpack(
                             Box::new(f_clone.take(chunk.real_c_len as u64))
                         };
                         std::io::copy(&mut raw_reader, &mut writer)?;
-                    } else if chunk.flags & CHUNK_DZ != 0 {
+                    } else if c_flags.contains(ChunkFlags::DZ_RANGE) {
                         return Err(anyhow!(
                             "Unsupported chunk format (DZ_RANGE) in {}. Use --keep-raw.",
                             rel_path_display
@@ -289,7 +300,6 @@ pub fn do_unpack(
                             "Failed to decompress {}: {}. Writing raw data.",
                             rel_path_display, e
                         );
-                        // Re-acquire reader for fallback
                         let mut raw_reader: Box<dyn Read> = if chunk.file_idx == 0 {
                             main_file.seek(SeekFrom::Start(chunk.offset as u64))?;
                             Box::new(main_file.by_ref().take(chunk.real_c_len as u64))

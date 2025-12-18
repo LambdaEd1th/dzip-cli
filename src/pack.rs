@@ -5,9 +5,10 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufWriter, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use crate::compression::CodecRegistry;
-use crate::constants::{CHUNK_DZ, CHUNK_LIST_TERMINATOR, MAGIC};
+use crate::constants::{CHUNK_LIST_TERMINATOR, ChunkFlags, MAGIC};
 use crate::types::{ChunkDef, Config};
 use crate::utils::encode_flags;
 
@@ -33,14 +34,17 @@ pub fn do_pack(config_path: &PathBuf, registry: &CodecRegistry) -> Result<()> {
     let mut has_dz_chunk = false;
     for c in &config.chunks {
         chunk_map_def.insert(c.id, c);
-        if encode_flags(&c.flags) & CHUNK_DZ != 0 {
+
+        let flags_bits = encode_flags(&c.flags);
+        let flags = ChunkFlags::from_bits_truncate(flags_bits);
+        if flags.contains(ChunkFlags::DZ_RANGE) {
             has_dz_chunk = true;
         }
     }
 
     // 1. Index Source Files
     info!("Indexing source files...");
-    let mut chunk_source_map: HashMap<u16, (PathBuf, u64, usize)> = HashMap::new();
+    let mut chunk_source_map: HashMap<u16, (Rc<PathBuf>, u64, usize)> = HashMap::new();
     for f_entry in &config.files {
         let mut clean_rel_path = PathBuf::new();
         for part in f_entry.path.split(['/', '\\']) {
@@ -59,6 +63,8 @@ pub fn do_pack(config_path: &PathBuf, registry: &CodecRegistry) -> Result<()> {
             return Err(anyhow!("Missing source: {:?}", full_path));
         }
 
+        let full_path_rc = Rc::new(full_path);
+
         let mut current_offset: u64 = 0;
         for cid in &f_entry.chunks {
             // Safely get chunk definition
@@ -70,13 +76,16 @@ pub fn do_pack(config_path: &PathBuf, registry: &CodecRegistry) -> Result<()> {
                 )
             })?;
 
-            let flags = encode_flags(&c_def.flags);
-            let read_len = if flags & CHUNK_DZ != 0 {
+            let flags_bits = encode_flags(&c_def.flags);
+            let flags = ChunkFlags::from_bits_truncate(flags_bits);
+
+            let read_len = if flags.contains(ChunkFlags::DZ_RANGE) {
                 c_def.size_compressed
             } else {
                 c_def.size_decompressed
             } as usize;
-            chunk_source_map.insert(*cid, (full_path.clone(), current_offset, read_len));
+
+            chunk_source_map.insert(*cid, (full_path_rc.clone(), current_offset, read_len));
             current_offset += read_len as u64;
         }
     }
@@ -206,7 +215,8 @@ pub fn do_pack(config_path: &PathBuf, registry: &CodecRegistry) -> Result<()> {
             .get(&c_def.id)
             .ok_or_else(|| anyhow!("Source mapping missing for chunk ID: {}", c_def.id))?;
 
-        let mut f_in = File::open(source_path)?;
+        // [Fix] Explicitly call .as_path() on the Rc<PathBuf> reference
+        let mut f_in = File::open(source_path.as_path())?;
         f_in.seek(SeekFrom::Start(*src_offset))?;
         let mut chunk_reader = f_in.take(*read_len as u64);
 

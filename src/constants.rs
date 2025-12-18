@@ -1,16 +1,21 @@
+use bitflags::bitflags;
+
 pub const MAGIC: u32 = 0x5A525444; // 'DTRZ' in Little Endian
-
-// Chunk Flags
-pub const CHUNK_COMBUF: u16 = 0x1;
-pub const CHUNK_DZ: u16 = 0x4;
-pub const CHUNK_ZLIB: u16 = 0x8;
-pub const CHUNK_BZIP: u16 = 0x10;
-pub const CHUNK_MP3: u16 = 0x20;
-pub const CHUNK_JPEG: u16 = 0x40;
-pub const CHUNK_ZERO: u16 = 0x80;
-pub const CHUNK_COPYCOMP: u16 = 0x100;
-pub const CHUNK_LZMA: u16 = 0x200;
-pub const CHUNK_RANDOMACCESS: u16 = 0x400;
-
-// End marker for the chunk list
 pub const CHUNK_LIST_TERMINATOR: u16 = 0xFFFF;
+
+// [Refactor] Use bitflags! macro for type-safe flag handling
+bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    pub struct ChunkFlags: u16 {
+        const COMBUF       = 0x1;
+        const DZ_RANGE     = 0x4;
+        const ZLIB         = 0x8;
+        const BZIP         = 0x10;
+        const MP3          = 0x20;
+        const JPEG         = 0x40;
+        const ZERO         = 0x80;
+        const COPYCOMP     = 0x100;
+        const LZMA         = 0x200;
+        const RANDOMACCESS = 0x400;
+    }
+}

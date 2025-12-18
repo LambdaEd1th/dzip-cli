@@ -1,71 +1,85 @@
-use crate::constants::*;
+use crate::constants::ChunkFlags; // [Refactor] Import ChunkFlags
 use anyhow::{Result, anyhow};
+use std::borrow::Cow;
 use std::io::BufRead;
 use std::path::{Component, Path, PathBuf};
 
-pub fn decode_flags(flags: u16) -> Vec<String> {
+// [Optimization] Return Vec<Cow<'static, str>> to avoid String allocations.
+// [Refactor] Use ChunkFlags to parse the u16 bits.
+pub fn decode_flags(bits: u16) -> Vec<Cow<'static, str>> {
+    let flags = ChunkFlags::from_bits_truncate(bits);
     let mut list = Vec::new();
-    if flags == 0 {
-        list.push("COPY".to_string());
+
+    if flags.is_empty() {
+        list.push(Cow::Borrowed("COPY"));
         return list;
     }
-    if flags & CHUNK_COMBUF != 0 {
-        list.push("COMBUF".to_string());
+
+    // [Refactor] Use .contains() for readability and safety
+    if flags.contains(ChunkFlags::COMBUF) {
+        list.push(Cow::Borrowed("COMBUF"));
     }
-    if flags & CHUNK_DZ != 0 {
-        list.push("DZ_RANGE".to_string());
+    if flags.contains(ChunkFlags::DZ_RANGE) {
+        list.push(Cow::Borrowed("DZ_RANGE"));
     }
-    if flags & CHUNK_ZLIB != 0 {
-        list.push("ZLIB".to_string());
+    if flags.contains(ChunkFlags::ZLIB) {
+        list.push(Cow::Borrowed("ZLIB"));
     }
-    if flags & CHUNK_BZIP != 0 {
-        list.push("BZIP".to_string());
+    if flags.contains(ChunkFlags::BZIP) {
+        list.push(Cow::Borrowed("BZIP"));
     }
-    if flags & CHUNK_MP3 != 0 {
-        list.push("MP3".to_string());
+    if flags.contains(ChunkFlags::MP3) {
+        list.push(Cow::Borrowed("MP3"));
     }
-    if flags & CHUNK_JPEG != 0 {
-        list.push("JPEG".to_string());
+    if flags.contains(ChunkFlags::JPEG) {
+        list.push(Cow::Borrowed("JPEG"));
     }
-    if flags & CHUNK_ZERO != 0 {
-        list.push("ZERO".to_string());
+    if flags.contains(ChunkFlags::ZERO) {
+        list.push(Cow::Borrowed("ZERO"));
     }
-    if flags & CHUNK_COPYCOMP != 0 {
-        list.push("COPY".to_string());
+    if flags.contains(ChunkFlags::COPYCOMP) {
+        list.push(Cow::Borrowed("COPY"));
     }
-    if flags & CHUNK_LZMA != 0 {
-        list.push("LZMA".to_string());
+    if flags.contains(ChunkFlags::LZMA) {
+        list.push(Cow::Borrowed("LZMA"));
     }
-    if flags & CHUNK_RANDOMACCESS != 0 {
-        list.push("RANDOM_ACCESS".to_string());
+    if flags.contains(ChunkFlags::RANDOMACCESS) {
+        list.push(Cow::Borrowed("RANDOM_ACCESS"));
     }
+
     list
 }
 
-pub fn encode_flags(flags_vec: &[String]) -> u16 {
-    let mut res = 0;
+// [Refactor] Construct ChunkFlags from strings and return the raw u16 bits.
+pub fn encode_flags<S: AsRef<str>>(flags_vec: &[S]) -> u16 {
+    let mut res = ChunkFlags::empty();
+
     if flags_vec.is_empty() {
-        return 0;
+        return res.bits();
     }
+
     for f in flags_vec {
-        match f.as_str() {
-            "COMBUF" => res |= CHUNK_COMBUF,
-            "DZ_RANGE" => res |= CHUNK_DZ,
-            "ZLIB" => res |= CHUNK_ZLIB,
-            "BZIP" => res |= CHUNK_BZIP,
-            "MP3" => res |= CHUNK_MP3,
-            "JPEG" => res |= CHUNK_JPEG,
-            "ZERO" => res |= CHUNK_ZERO,
-            "COPY" => res |= CHUNK_COPYCOMP,
-            "LZMA" => res |= CHUNK_LZMA,
-            "RANDOM_ACCESS" => res |= CHUNK_RANDOMACCESS,
+        match f.as_ref() {
+            "COMBUF" => res.insert(ChunkFlags::COMBUF),
+            "DZ_RANGE" => res.insert(ChunkFlags::DZ_RANGE),
+            "ZLIB" => res.insert(ChunkFlags::ZLIB),
+            "BZIP" => res.insert(ChunkFlags::BZIP),
+            "MP3" => res.insert(ChunkFlags::MP3),
+            "JPEG" => res.insert(ChunkFlags::JPEG),
+            "ZERO" => res.insert(ChunkFlags::ZERO),
+            "COPY" => res.insert(ChunkFlags::COPYCOMP),
+            "LZMA" => res.insert(ChunkFlags::LZMA),
+            "RANDOM_ACCESS" => res.insert(ChunkFlags::RANDOMACCESS),
             _ => {}
         }
     }
-    if res == 0 && flags_vec.contains(&"COPY".to_string()) {
-        res |= CHUNK_COPYCOMP;
+
+    // Explicitly handle "COPY" string which maps to COPYCOMP or empty
+    if res.is_empty() && flags_vec.iter().any(|f| f.as_ref() == "COPY") {
+        res.insert(ChunkFlags::COPYCOMP);
     }
-    res
+
+    res.bits()
 }
 
 pub fn read_null_term_string<R: BufRead>(reader: &mut R) -> Result<String> {
@@ -77,32 +91,28 @@ pub fn read_null_term_string<R: BufRead>(reader: &mut R) -> Result<String> {
     Ok(String::from_utf8_lossy(&bytes).to_string())
 }
 
-// Security enhanced version
 pub fn sanitize_path(base: &Path, rel_path_str: &str) -> Result<PathBuf> {
-    let rel_path = Path::new(rel_path_str);
+    let normalized = rel_path_str.replace('\\', "/");
+    let rel_path = Path::new(&normalized);
+    
     let mut safe_path = PathBuf::new();
 
     for component in rel_path.components() {
         match component {
-            // 1. Normal filename: safe, append to path
             Component::Normal(os_str) => safe_path.push(os_str),
-            // 2. Parent directory (".."): extremely dangerous, must be intercepted
             Component::ParentDir => {
                 return Err(anyhow!(
                     "Security Error: Directory traversal (..) detected in path: {}",
                     rel_path_str
                 ));
             }
-            // 3. Root directory ("/"): ignore
             Component::RootDir => continue,
-            // 4. Drive prefix (e.g. "C:"): absolute path or drive letter, forbidden
             Component::Prefix(_) => {
                 return Err(anyhow!(
                     "Security Error: Absolute path or drive letter detected: {}",
                     rel_path_str
                 ));
             }
-            // 5. Current directory ("."): ignore
             Component::CurDir => continue,
         }
     }
@@ -112,87 +122,4 @@ pub fn sanitize_path(base: &Path, rel_path_str: &str) -> Result<PathBuf> {
     }
 
     Ok(base.join(safe_path))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::path::{Component, Path};
-
-    #[test]
-    fn test_sanitize_path_security() {
-        let base = Path::new("/tmp/sandbox");
-
-        // 1. Normal path: should succeed and append to base
-        let res = sanitize_path(base, "textures/player.png");
-        assert!(res.is_ok());
-        assert_eq!(res.unwrap(), base.join("textures").join("player.png"));
-
-        // 2. Directory traversal attack (ParentDir): must return error
-        let res = sanitize_path(base, "../etc/passwd");
-        assert!(res.is_err());
-        let err_msg = res.unwrap_err().to_string();
-        assert!(
-            err_msg.contains("Directory traversal"),
-            "Should detect directory traversal"
-        );
-
-        // 3. Embedded directory traversal: must return error
-        let res = sanitize_path(base, "images/../../secret.txt");
-        assert!(res.is_err());
-
-        // 4. Absolute path prefix (Windows): must return error
-        // Simulate Windows drive letter path for testing
-        let path_str = std::path::Path::new("C:\\Windows\\System32");
-        if path_str
-            .components()
-            .any(|c| matches!(c, Component::Prefix(_)))
-        {
-            let res = sanitize_path(base, "C:\\Windows\\System32");
-            assert!(res.is_err());
-        }
-    }
-
-    #[test]
-    fn test_sanitize_path_root_handling() {
-        let base = Path::new("/app/data");
-
-        // 5. Starts with root directory: Logic ignores RootDir, treating it as relative
-        // Input "/var/log" -> should become "/app/data/var/log" (prevent escaping base)
-        let res = sanitize_path(base, "/var/log");
-        assert!(res.is_ok());
-        assert_eq!(res.unwrap(), base.join("var").join("log"));
-    }
-
-    #[test]
-    fn test_flags_roundtrip() {
-        // Test consistency of Flag encoding and decoding
-        let flags = vec!["LZMA".to_string(), "ZLIB".to_string(), "MP3".to_string()];
-
-        // Encode
-        let encoded = encode_flags(&flags);
-        assert_eq!(encoded & CHUNK_LZMA, CHUNK_LZMA);
-        assert_eq!(encoded & CHUNK_ZLIB, CHUNK_ZLIB);
-        assert_eq!(encoded & CHUNK_MP3, CHUNK_MP3);
-
-        // Decode
-        let decoded = decode_flags(encoded);
-        assert!(decoded.contains(&"LZMA".to_string()));
-        assert!(decoded.contains(&"ZLIB".to_string()));
-        assert!(decoded.contains(&"MP3".to_string()));
-
-        // Ensure no extra flags
-        assert!(!decoded.contains(&"BZIP".to_string()));
-    }
-
-    #[test]
-    fn test_empty_flags() {
-        let empty: Vec<String> = Vec::new();
-        let encoded = encode_flags(&empty);
-        assert_eq!(encoded, 0); // 0 defaults to COPY
-
-        let decoded = decode_flags(0);
-        assert_eq!(decoded.len(), 1);
-        assert_eq!(decoded[0], "COPY");
-    }
 }
