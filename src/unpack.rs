@@ -1,10 +1,9 @@
 use anyhow::{Result, anyhow};
 use byteorder::{LittleEndian, ReadBytesExt};
-use log::{info, warn}; // [Fix] Removed unused 'debug'
+use log::{info, warn};
 use std::collections::{HashMap, hash_map::Entry};
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
-// [Fix] Import MAIN_SEPARATOR_STR to adapt path separators for current OS
 use std::path::{MAIN_SEPARATOR_STR, PathBuf};
 
 use crate::compression::CodecRegistry;

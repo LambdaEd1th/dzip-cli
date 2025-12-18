@@ -94,7 +94,7 @@ pub fn read_null_term_string<R: BufRead>(reader: &mut R) -> Result<String> {
 pub fn sanitize_path(base: &Path, rel_path_str: &str) -> Result<PathBuf> {
     let normalized = rel_path_str.replace('\\', "/");
     let rel_path = Path::new(&normalized);
-    
+
     let mut safe_path = PathBuf::new();
 
     for component in rel_path.components() {
