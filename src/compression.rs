@@ -24,6 +24,13 @@ pub struct CodecRegistry {
     compressors: Vec<(u16, Arc<dyn Compressor>)>,
 }
 
+// Added Default implementation to fix clippy warning
+impl Default for CodecRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CodecRegistry {
     pub fn new() -> Self {
         Self {
@@ -174,4 +181,96 @@ pub fn create_default_registry() -> CodecRegistry {
     reg.register_compressor(CHUNK_BZIP, Bzip2Compressor);
 
     reg
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    // Helper: create a memory buffer for testing
+    fn setup_registry() -> CodecRegistry {
+        create_default_registry()
+    }
+
+    #[test]
+    fn test_zero_decompressor() {
+        let registry = setup_registry();
+        // ZERO algorithm needs no input data, only length
+        let mut input = Cursor::new(vec![]);
+        let mut output = Cursor::new(Vec::new());
+        let target_len = 100;
+
+        // Execute decompression: expect 100 zero bytes output
+        let res = registry.decompress(&mut input, &mut output, CHUNK_ZERO, target_len);
+        assert!(res.is_ok());
+
+        let result_data = output.into_inner();
+        assert_eq!(result_data.len(), target_len as usize);
+        assert!(result_data.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn test_copy_fallback_decompress() {
+        let registry = setup_registry();
+        let raw_data = b"Hello, Marmalade SDK!";
+        let mut input = Cursor::new(raw_data);
+        let mut output = Cursor::new(Vec::new());
+
+        // Use 0 (COPY) or unknown Flag
+        // Expected behavior: directly copy input to output
+        let res = registry.decompress(&mut input, &mut output, 0, raw_data.len() as u32);
+        assert!(res.is_ok());
+
+        let result_data = output.into_inner();
+        assert_eq!(result_data, raw_data);
+    }
+
+    #[test]
+    fn test_unknown_flag_fallback() {
+        let registry = setup_registry();
+        let raw_data = b"Data with unknown flag";
+        let mut input = Cursor::new(raw_data);
+        let mut output = Cursor::new(Vec::new());
+
+        // Use an unregistered Flag, e.g., 0x8000
+        let unknown_flag = 0x8000;
+
+        // Expected: registry.decompress defaults to COPY when no decoder is found
+        let res = registry.decompress(&mut input, &mut output, unknown_flag, raw_data.len() as u32);
+        assert!(res.is_ok());
+        assert_eq!(output.into_inner(), raw_data);
+    }
+
+    #[test]
+    fn test_lzma_roundtrip() {
+        // Integration test: verify LZMA compression and decompression roundtrip
+        let registry = setup_registry();
+        let original_data = b"Repeat Repeat Repeat Repeat Repeat";
+
+        // 1. Compress
+        let mut input_compress = Cursor::new(original_data);
+        let mut compressed_output = Cursor::new(Vec::new());
+        let compress_res =
+            registry.compress(&mut input_compress, &mut compressed_output, CHUNK_LZMA);
+        assert!(compress_res.is_ok());
+
+        let compressed_bytes = compressed_output.into_inner();
+        // Compressed data should differ from original (usually smaller, or has LZMA header)
+        assert_ne!(compressed_bytes, original_data);
+
+        // 2. Decompress
+        let mut input_decompress = Cursor::new(compressed_bytes);
+        let mut restored_output = Cursor::new(Vec::new());
+        // LZMA decompression usually doesn't need pre-known length, but the interface requires it
+        let decompress_res = registry.decompress(
+            &mut input_decompress,
+            &mut restored_output,
+            CHUNK_LZMA,
+            original_data.len() as u32,
+        );
+        assert!(decompress_res.is_ok());
+
+        assert_eq!(restored_output.into_inner(), original_data);
+    }
 }

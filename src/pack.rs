@@ -15,12 +15,17 @@ pub fn do_pack(config_path: &PathBuf, registry: &CodecRegistry) -> Result<()> {
     let toml_content = fs::read_to_string(config_path)?;
     let config: Config = toml::from_str(&toml_content)?;
 
+    // Safe handling of path components
     let base_dir = config_path
         .file_stem()
-        .unwrap()
+        .ok_or_else(|| anyhow!("Invalid config filename: {:?}", config_path))?
         .to_string_lossy()
         .to_string();
-    let base_path = config_path.parent().unwrap().join(&base_dir);
+
+    let base_path = config_path
+        .parent()
+        .ok_or_else(|| anyhow!("Cannot determine parent directory of {:?}", config_path))?
+        .join(&base_dir);
 
     info!("Packing from directory: {:?}", base_path);
 
@@ -56,7 +61,15 @@ pub fn do_pack(config_path: &PathBuf, registry: &CodecRegistry) -> Result<()> {
 
         let mut current_offset: u64 = 0;
         for cid in &f_entry.chunks {
-            let c_def = chunk_map_def.get(cid).unwrap();
+            // Safely get chunk definition
+            let c_def = chunk_map_def.get(cid).ok_or_else(|| {
+                anyhow!(
+                    "Chunk ID {} referenced in file '{}' but not defined in [chunks]",
+                    cid,
+                    f_entry.path
+                )
+            })?;
+
             let flags = encode_flags(&c_def.flags);
             let read_len = if flags & CHUNK_DZ != 0 {
                 c_def.size_compressed
@@ -189,7 +202,9 @@ pub fn do_pack(config_path: &PathBuf, registry: &CodecRegistry) -> Result<()> {
     sorted_chunks_def.sort_by_key(|c| c.id);
 
     for c_def in &mut sorted_chunks_def {
-        let (source_path, src_offset, read_len) = chunk_source_map.get(&c_def.id).unwrap();
+        let (source_path, src_offset, read_len) = chunk_source_map
+            .get(&c_def.id)
+            .ok_or_else(|| anyhow!("Source mapping missing for chunk ID: {}", c_def.id))?;
 
         let mut f_in = File::open(source_path)?;
         f_in.seek(SeekFrom::Start(*src_offset))?;
@@ -200,7 +215,14 @@ pub fn do_pack(config_path: &PathBuf, registry: &CodecRegistry) -> Result<()> {
         let target_writer = if c_def.archive_file_index == 0 {
             &mut writer0
         } else {
-            split_writers.get_mut(&c_def.archive_file_index).unwrap()
+            split_writers
+                .get_mut(&c_def.archive_file_index)
+                .ok_or_else(|| {
+                    anyhow!(
+                        "Split archive writer index {} not initialized",
+                        c_def.archive_file_index
+                    )
+                })?
         };
 
         let start_pos = target_writer.stream_position()?;
@@ -214,7 +236,14 @@ pub fn do_pack(config_path: &PathBuf, registry: &CodecRegistry) -> Result<()> {
         c_def.offset = if c_def.archive_file_index == 0 {
             current_offset_0
         } else {
-            *split_offsets.get(&c_def.archive_file_index).unwrap()
+            *split_offsets
+                .get(&c_def.archive_file_index)
+                .ok_or_else(|| {
+                    anyhow!(
+                        "Split archive offset index {} not found",
+                        c_def.archive_file_index
+                    )
+                })?
         };
         c_def.size_compressed = comp_len;
 

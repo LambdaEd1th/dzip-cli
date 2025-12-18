@@ -2,14 +2,8 @@ use clap::{Parser, Subcommand};
 use log::error;
 use std::path::PathBuf;
 
-use crate::compression::create_default_registry;
-
-mod compression;
-mod constants;
-mod pack;
-mod types;
-mod unpack;
-mod utils;
+use dzip_cli::compression::create_default_registry;
+use dzip_cli::{pack, unpack};
 
 #[derive(Parser)]
 #[command(
@@ -49,9 +43,8 @@ fn main() {
 
     let args = Cli::parse();
 
-    // 初始化编解码注册中心 (Hook 扩展点)
+    // Initialize the codec registry
     let registry = create_default_registry();
-    // 如果有自定义的解码器，可在此处 registry.register_decompressor(...)
 
     let res = match args.command {
         Commands::Unpack {
@@ -63,6 +56,7 @@ fn main() {
     };
 
     if let Err(e) = res {
+        // Print the full error chain using {:#}
         error!("{:#}", e);
         std::process::exit(1);
     }

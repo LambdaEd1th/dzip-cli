@@ -182,7 +182,12 @@ pub fn do_unpack(
         chunk_map.insert(c.id, c.clone());
     }
 
-    let base_name = input_path.file_stem().unwrap().to_string_lossy();
+    // Safe handling of input filename
+    let base_name = input_path
+        .file_stem()
+        .ok_or_else(|| anyhow!("Invalid input file path (no stem): {:?}", input_path))?
+        .to_string_lossy();
+
     let root_out = out_opt.unwrap_or_else(|| PathBuf::from(&base_name.to_string()));
     fs::create_dir_all(&root_out)?;
 
@@ -258,11 +263,17 @@ pub fn do_unpack(
                             "Keeping raw data for chunk {} (DZ_RANGE) in {}",
                             chunk.id, rel_path_display
                         );
+                        // Re-acquire reader for fallback
                         let mut raw_reader: Box<dyn Read> = if chunk.file_idx == 0 {
                             main_file.seek(SeekFrom::Start(chunk.offset as u64))?;
                             Box::new(main_file.by_ref().take(chunk.real_c_len as u64))
                         } else {
-                            let f = split_handles.get(&chunk.file_idx).unwrap();
+                            let f = split_handles.get(&chunk.file_idx).ok_or_else(|| {
+                                anyhow!(
+                                    "Split file handle for index {} not found/opened",
+                                    chunk.file_idx
+                                )
+                            })?;
                             let mut f_clone = f.try_clone()?;
                             f_clone.seek(SeekFrom::Start(chunk.offset as u64))?;
                             Box::new(f_clone.take(chunk.real_c_len as u64))
@@ -278,11 +289,17 @@ pub fn do_unpack(
                             "Failed to decompress {}: {}. Writing raw data.",
                             rel_path_display, e
                         );
+                        // Re-acquire reader for fallback
                         let mut raw_reader: Box<dyn Read> = if chunk.file_idx == 0 {
                             main_file.seek(SeekFrom::Start(chunk.offset as u64))?;
                             Box::new(main_file.by_ref().take(chunk.real_c_len as u64))
                         } else {
-                            let f = split_handles.get(&chunk.file_idx).unwrap();
+                            let f = split_handles.get(&chunk.file_idx).ok_or_else(|| {
+                                anyhow!(
+                                    "Split file handle for index {} not found/opened",
+                                    chunk.file_idx
+                                )
+                            })?;
                             let mut f_clone = f.try_clone()?;
                             f_clone.seek(SeekFrom::Start(chunk.offset as u64))?;
                             Box::new(f_clone.take(chunk.real_c_len as u64))
