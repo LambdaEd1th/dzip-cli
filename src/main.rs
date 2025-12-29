@@ -34,7 +34,6 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
-    // [Fixed]: Removed redundant `use env_logger;`
     env_logger::init();
     let cli = Cli::parse();
     let registry = create_default_registry();
@@ -45,7 +44,6 @@ fn main() -> Result<()> {
             output,
             keep_raw,
         } => {
-            // anyhow handles DzipError automatically here via ?
             do_unpack(input, output.clone(), *keep_raw, &registry)?;
         }
         Commands::Pack { config } => {

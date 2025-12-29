@@ -11,7 +11,9 @@ use std::thread;
 
 use crate::Result;
 use crate::compression::CodecRegistry;
-use crate::constants::{CHUNK_LIST_TERMINATOR, ChunkFlags, DEFAULT_BUFFER_SIZE, MAGIC};
+use crate::constants::{
+    CHUNK_LIST_TERMINATOR, CURRENT_DIR_STR, ChunkFlags, DEFAULT_BUFFER_SIZE, MAGIC,
+};
 use crate::error::DzipError;
 use crate::types::{ChunkDef, Config};
 use crate::utils::{encode_flags, normalize_path};
@@ -30,7 +32,6 @@ struct PackContext {
 struct WriterContext {
     main: BufWriter<File>,
     split: HashMap<u16, BufWriter<File>>,
-    split_offsets: HashMap<u16, u32>,
 }
 
 struct CompressionJob {
@@ -69,7 +70,6 @@ pub fn do_pack(config_path: &PathBuf, registry: &CodecRegistry) -> Result<()> {
         &ctx,
         writers.main,
         writers.split,
-        &mut writers.split_offsets,
         registry,
     )?;
 
@@ -146,21 +146,21 @@ fn index_source_files(
     let mut unique_dirs = HashSet::new();
     for f in &config.files {
         let d = f.directory.trim();
-        if d.is_empty() || d == "." {
-            unique_dirs.insert(".".to_string());
+        if d.is_empty() || d == CURRENT_DIR_STR {
+            unique_dirs.insert(CURRENT_DIR_STR.to_string());
         } else {
             unique_dirs.insert(d.replace('\\', "/"));
         }
     }
-    if !unique_dirs.contains(".") {
-        unique_dirs.insert(".".to_string());
+    if !unique_dirs.contains(CURRENT_DIR_STR) {
+        unique_dirs.insert(CURRENT_DIR_STR.to_string());
     }
     let mut sorted_dirs: Vec<String> = unique_dirs.into_iter().collect();
     sorted_dirs.sort();
-    if let Some(pos) = sorted_dirs.iter().position(|x| x == ".") {
+    if let Some(pos) = sorted_dirs.iter().position(|x| x == CURRENT_DIR_STR) {
         sorted_dirs.remove(pos);
     }
-    sorted_dirs.insert(0, ".".to_string());
+    sorted_dirs.insert(0, CURRENT_DIR_STR.to_string());
 
     let dir_map: HashMap<String, usize> = sorted_dirs
         .iter()
@@ -188,20 +188,17 @@ fn prepare_writers(
     let writer0 = BufWriter::with_capacity(DEFAULT_BUFFER_SIZE, f0);
 
     let mut split_writers = HashMap::new();
-    let mut split_offsets = HashMap::new();
 
     for (i, fname) in config.archive_files.iter().enumerate() {
         let idx = (i + 1) as u16;
         let path = base_path.join(fname);
         let f = File::create(&path)?;
         split_writers.insert(idx, BufWriter::with_capacity(DEFAULT_BUFFER_SIZE, f));
-        split_offsets.insert(idx, 0);
     }
 
     Ok(WriterContext {
         main: writer0,
         split: split_writers,
-        split_offsets,
     })
 }
 
@@ -226,8 +223,8 @@ fn build_and_write_header(
     }
     for f in &config.files {
         let raw_d = f.directory.replace('\\', "/");
-        let d_key = if raw_d.is_empty() || raw_d == "." {
-            "."
+        let d_key = if raw_d.is_empty() || raw_d == CURRENT_DIR_STR {
+            CURRENT_DIR_STR
         } else {
             &raw_d
         };
@@ -284,7 +281,6 @@ fn run_compression_pipeline(
     ctx: &PackContext,
     mut writer0: BufWriter<File>,
     mut split_writers: HashMap<u16, BufWriter<File>>,
-    split_offsets: &mut HashMap<u16, u32>,
     registry: &CodecRegistry,
 ) -> Result<(Vec<ChunkDef>, BufWriter<File>)> {
     sorted_chunks_def.sort_by_key(|c| c.id);
@@ -296,7 +292,7 @@ fn run_compression_pipeline(
             .template(
                 "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
             )
-            .unwrap()
+            .expect("Failed to set progress bar template") // [Fixed]: Replaced unwrap() with expect()
             .progress_chars("#>-"),
     );
 
@@ -323,7 +319,10 @@ fn run_compression_pipeline(
     let (tx, rx) = mpsc::sync_channel::<(usize, Result<Vec<u8>>)>(channel_bound);
 
     let mut current_offset_0 = ctx.current_offset_0;
-    let mut split_offsets_owned = split_offsets.clone();
+
+    // Initialize split_offsets_owned directly from split_writers keys
+    let mut split_offsets_owned: HashMap<u16, u32> =
+        split_writers.keys().map(|k| (*k, 0)).collect();
 
     let writer_handle = thread::spawn(move || -> Result<(Vec<ChunkDef>, BufWriter<File>)> {
         let total_chunks = sorted_chunks_def.len();
@@ -384,7 +383,8 @@ fn run_compression_pipeline(
             } else {
                 *split_offsets_owned
                     .get_mut(&c_def.archive_file_index)
-                    .unwrap() += c_def.size_compressed;
+                    .expect("Logic error: Split offset missing for valid archive index") // [Fixed]: Replaced unwrap() with expect()
+                    += c_def.size_compressed;
             }
             next_idx += 1;
 

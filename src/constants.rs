@@ -3,6 +3,8 @@ use bitflags::bitflags;
 pub const MAGIC: u32 = 0x5A525444; // 'DTRZ' in Little Endian
 pub const CHUNK_LIST_TERMINATOR: u16 = 0xFFFF;
 
+pub const CURRENT_DIR_STR: &str = ".";
+
 pub const DEFAULT_BUFFER_SIZE: usize = 128 * 1024;
 
 // This acts as the Single Source of Truth for flag handling.

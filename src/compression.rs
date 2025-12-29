@@ -1,4 +1,4 @@
-use crate::constants::ChunkFlags; // [Fixed]: Removed unused DEFAULT_BUFFER_SIZE
+use crate::constants::ChunkFlags;
 use crate::error::DzipError;
 use anyhow::{Context, Result};
 use std::io::{self, Read, Write};

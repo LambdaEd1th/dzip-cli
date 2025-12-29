@@ -9,7 +9,9 @@ use std::path::{MAIN_SEPARATOR_STR, Path, PathBuf};
 
 use crate::Result;
 use crate::compression::CodecRegistry;
-use crate::constants::{CHUNK_LIST_TERMINATOR, ChunkFlags, DEFAULT_BUFFER_SIZE, MAGIC};
+use crate::constants::{
+    CHUNK_LIST_TERMINATOR, CURRENT_DIR_STR, ChunkFlags, DEFAULT_BUFFER_SIZE, MAGIC,
+};
 use crate::error::DzipError;
 use crate::types::{ArchiveMeta, ChunkDef, Config, FileEntry, RangeSettings};
 use crate::utils::{decode_flags, read_null_term_string, sanitize_path};
@@ -66,7 +68,8 @@ pub fn do_unpack(
         .map_err(|e| DzipError::IoContext(format!("Creating out dir {:?}", root_out), e))?;
 
     extract_files(&ctx, &root_out, input_path, keep_raw, registry)?;
-    save_config(&ctx, &base_name, &root_out)?;
+    // [Modified]: Removed unused 'root_out' parameter from call
+    save_config(&ctx, &base_name)?;
 
     Ok(())
 }
@@ -95,12 +98,11 @@ fn read_archive_structure(input_path: &Path) -> Result<ArchiveContext> {
 
     let mut user_files = Vec::with_capacity(num_files as usize);
     for _ in 0..num_files {
-        // read_null_term_string now returns io::Result, so mapping to DzipError::Io is correct
         user_files.push(read_null_term_string(&mut reader).map_err(DzipError::Io)?);
     }
 
     let mut directories = Vec::with_capacity(num_dirs as usize);
-    directories.push(".".to_string());
+    directories.push(CURRENT_DIR_STR.to_string());
     for _ in 0..(num_dirs - 1) {
         directories.push(read_null_term_string(&mut reader).map_err(DzipError::Io)?);
     }
@@ -196,7 +198,7 @@ fn read_archive_structure(input_path: &Path) -> Result<ArchiveContext> {
 }
 
 fn correct_chunk_sizes(ctx: &mut ArchiveContext, input_path: &Path) -> Result<()> {
-    let base_dir = input_path.parent().unwrap_or(Path::new("."));
+    let base_dir = input_path.parent().unwrap_or(Path::new(CURRENT_DIR_STR));
     let mut file_chunks_map: HashMap<u16, Vec<usize>> = HashMap::new();
 
     for (idx, c) in ctx.chunks.iter().enumerate() {
@@ -249,7 +251,7 @@ fn extract_files(
     ctx: &ArchiveContext,
     root_out: &Path,
     input_path: &Path,
-    _keep_raw: bool,
+    keep_raw: bool,
     registry: &CodecRegistry,
 ) -> Result<()> {
     info!(
@@ -258,7 +260,7 @@ fn extract_files(
         root_out
     );
 
-    let base_dir = input_path.parent().unwrap_or(Path::new("."));
+    let base_dir = input_path.parent().unwrap_or(Path::new(CURRENT_DIR_STR));
 
     let chunk_indices: HashMap<u16, usize> = ctx
         .chunks
@@ -273,7 +275,7 @@ fn extract_files(
             .template(
                 "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
             )
-            .unwrap()
+            .expect("Failed to set progress bar template")
             .progress_chars("#>-"),
     );
 
@@ -284,15 +286,14 @@ fn extract_files(
             let raw_dir = if entry.dir_idx < ctx.directories.len() {
                 &ctx.directories[entry.dir_idx]
             } else {
-                "."
+                CURRENT_DIR_STR
             };
-            let full_raw_path = if raw_dir == "." || raw_dir.is_empty() {
+            let full_raw_path = if raw_dir == CURRENT_DIR_STR || raw_dir.is_empty() {
                 fname.clone()
             } else {
                 format!("{}/{}", raw_dir, fname)
             };
 
-            // [Fixed]: sanitize_path now returns crate::Result, so just ? works
             let disk_path = sanitize_path(root_out, &full_raw_path)?;
 
             if let Some(parent) = disk_path.parent() {
@@ -345,17 +346,21 @@ fn extract_files(
                         chunk.flags,
                         chunk.d_len,
                     ) {
-                        let err_msg = e.to_string();
+                        if keep_raw {
+                            let err_msg = e.to_string();
 
-                        let mut raw_buf_reader = source_reader.into_inner();
-                        raw_buf_reader.seek(SeekFrom::Start(chunk.offset as u64))?;
-                        let mut raw_take = raw_buf_reader.take(chunk.real_c_len as u64);
+                            let mut raw_buf_reader = source_reader.into_inner();
+                            raw_buf_reader.seek(SeekFrom::Start(chunk.offset as u64))?;
+                            let mut raw_take = raw_buf_reader.take(chunk.real_c_len as u64);
 
-                        warn!(
-                            "Failed to decompress chunk {}: {}. Writing raw data.",
-                            chunk.id, err_msg
-                        );
-                        std::io::copy(&mut raw_take, &mut writer)?;
+                            warn!(
+                                "Failed to decompress chunk {}: {}. Writing raw data (keep-raw enabled).",
+                                chunk.id, err_msg
+                            );
+                            std::io::copy(&mut raw_take, &mut writer)?;
+                        } else {
+                             return Err(DzipError::Decompression(e.to_string()));
+                        }
                     }
                 }
             }
@@ -369,16 +374,16 @@ fn extract_files(
     Ok(())
 }
 
-fn save_config(ctx: &ArchiveContext, base_name: &str, _root_out: &Path) -> Result<()> {
+fn save_config(ctx: &ArchiveContext, base_name: &str) -> Result<()> {
     let mut toml_files = Vec::new();
     for entry in &ctx.map_entries {
         let fname = &ctx.user_files[entry.id];
         let raw_dir = if entry.dir_idx < ctx.directories.len() {
             &ctx.directories[entry.dir_idx]
         } else {
-            "."
+            CURRENT_DIR_STR
         };
-        let full_raw_path = if raw_dir == "." || raw_dir.is_empty() {
+        let full_raw_path = if raw_dir == CURRENT_DIR_STR || raw_dir.is_empty() {
             fname.clone()
         } else {
             format!("{}/{}", raw_dir, fname)
