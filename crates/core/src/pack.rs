@@ -8,7 +8,7 @@ use std::sync::mpsc;
 use tempfile::NamedTempFile;
 
 use crate::Result;
-use crate::codecs::compress;
+use crate::codec::compress;
 use crate::error::DzipError;
 use crate::format::{
     CHUNK_LIST_TERMINATOR, CURRENT_DIR_STR, ChunkFlags, DEFAULT_BUFFER_SIZE, MAGIC,

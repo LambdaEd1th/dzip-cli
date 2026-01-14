@@ -6,7 +6,7 @@ use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use crate::Result;
-use crate::codecs::decompress;
+use crate::codec::decompress;
 use crate::error::DzipError;
 use crate::format::{
     CHUNK_LIST_TERMINATOR, CURRENT_DIR_STR, ChunkFlags, DEFAULT_BUFFER_SIZE, MAGIC,
