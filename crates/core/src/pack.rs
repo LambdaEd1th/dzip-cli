@@ -23,6 +23,7 @@ type PipelineOutput = (Vec<ChunkDef>, BufWriter<BoxedWriter>);
 pub struct PackPlan {
     pub config: Config,
     pub base_dir_name: String,
+    /// Maps Chunk ID -> (Source File Path, Offset in Source, Read Length)
     pub chunk_source_map: HashMap<u16, (String, u64, usize)>,
     pub sorted_dirs: Vec<String>,
     pub dir_map: HashMap<String, usize>,
@@ -39,7 +40,6 @@ struct CompressionJob {
     source_path: String,
     offset: u64,
     read_len: usize,
-    // [Modified] Store a single flag string instead of a list
     flag: String,
 }
 
@@ -60,12 +60,12 @@ impl PackPlan {
         let mut chunk_map_def = HashMap::new();
         let mut has_dz_chunk = false;
 
+        // Index chunks by ID for quick lookup
         for c in &config.chunks {
             chunk_map_def.insert(c.id, c.clone());
-            // [Modified] Encode single flag string to check for DZ_RANGE
             let flags =
                 ChunkFlags::from_bits_truncate(encode_flags(&[std::borrow::Cow::Borrowed(
-                    c.flags.as_str(),
+                    c.flag.as_str(),
                 )]));
             if flags.contains(ChunkFlags::DZ_RANGE) {
                 has_dz_chunk = true;
@@ -81,28 +81,31 @@ impl PackPlan {
                     os_path_str
                 )));
             }
-            let mut current_offset: u64 = 0;
-            for cid in &f_entry.chunks {
-                let c_def = chunk_map_def
-                    .get(cid)
-                    .ok_or(DzipError::ChunkDefinitionMissing(*cid))?;
 
-                // [Modified] Encode single flag string to determine read length
-                let flags =
-                    ChunkFlags::from_bits_truncate(encode_flags(&[std::borrow::Cow::Borrowed(
-                        c_def.flags.as_str(),
-                    )]));
+            // Assume single chunk per file, so offset starts at 0
+            let current_offset: u64 = 0;
+            let cid = f_entry.chunk;
 
-                let read_len = if flags.contains(ChunkFlags::DZ_RANGE) {
-                    c_def.size_compressed
-                } else {
-                    c_def.size_decompressed
-                } as usize;
-                chunk_source_map.insert(*cid, (os_path_str.clone(), current_offset, read_len));
-                current_offset += read_len as u64;
-            }
+            let c_def = chunk_map_def
+                .get(&cid)
+                .ok_or(DzipError::ChunkDefinitionMissing(cid))?;
+
+            let flags =
+                ChunkFlags::from_bits_truncate(encode_flags(&[std::borrow::Cow::Borrowed(
+                    c_def.flag.as_str(),
+                )]));
+
+            // Determine read length based on whether it is a DZ_RANGE (Raw) or standard chunk
+            let read_len = if flags.contains(ChunkFlags::DZ_RANGE) {
+                c_def.size_compressed
+            } else {
+                c_def.size_decompressed
+            } as usize;
+
+            chunk_source_map.insert(cid, (os_path_str.clone(), current_offset, read_len));
         }
 
+        // Collect unique directories
         let mut unique_dirs = HashSet::new();
         for f in &config.files {
             let d = f.directory.trim();
@@ -117,6 +120,7 @@ impl PackPlan {
         }
         let mut sorted_dirs: Vec<String> = unique_dirs.into_iter().collect();
         sorted_dirs.sort();
+        // Ensure "." is always the first directory (ID 0)
         if let Some(pos) = sorted_dirs.iter().position(|x| x == CURRENT_DIR_STR) {
             sorted_dirs.remove(pos);
         }
@@ -127,6 +131,7 @@ impl PackPlan {
             .enumerate()
             .map(|(i, d)| (d.clone(), i))
             .collect();
+
         Ok(Self {
             config,
             base_dir_name,
@@ -140,12 +145,21 @@ impl PackPlan {
     pub fn execute(&self, sink: &mut dyn PackSink, source: &dyn PackSource) -> Result<()> {
         info!("Packing logical archive: {:?}", self.base_dir_name);
         let mut writers = self.prepare_writers(sink)?;
+
+        // Write header and get the placeholder position for the chunk table
         let chunk_table_start = self.build_and_write_header(&mut writers.main)?;
+
         let current_offset_0 = writers.main.stream_position().map_err(DzipError::Io)? as u32;
+
+        // Compress data and write to appropriate files
         let final_chunks =
             self.run_compression_pipeline(current_offset_0, writers.main, writers.split, source)?;
+
         let (updated_chunks, mut main_writer_final) = final_chunks;
+
+        // Fill in the chunk table at the header
         Self::write_final_chunk_table(&mut main_writer_final, chunk_table_start, &updated_chunks)?;
+
         info!("All files packed successfully.");
         Ok(())
     }
@@ -176,19 +190,25 @@ impl PackPlan {
         header_buffer
             .write_u16::<LittleEndian>(self.sorted_dirs.len() as u16)
             .map_err(DzipError::Io)?;
-        header_buffer.write_u8(0).map_err(DzipError::Io)?;
+        header_buffer.write_u8(0).map_err(DzipError::Io)?; // Version / Padding
+
+        // Write file names
         for f in &self.config.files {
             header_buffer
                 .write_all(f.filename.as_bytes())
                 .map_err(DzipError::Io)?;
             header_buffer.write_u8(0).map_err(DzipError::Io)?;
         }
+
+        // Write directory names (skipping root ".")
         for d in self.sorted_dirs.iter().skip(1) {
             header_buffer
                 .write_all(d.as_bytes())
                 .map_err(DzipError::Io)?;
             header_buffer.write_u8(0).map_err(DzipError::Io)?;
         }
+
+        // Write file map entries (Directory ID + Chunk IDs)
         for f in &self.config.files {
             let raw_d = to_archive_path(Path::new(&f.directory));
             let d_key = if raw_d.is_empty() || raw_d == CURRENT_DIR_STR {
@@ -201,11 +221,13 @@ impl PackPlan {
             header_buffer
                 .write_u16::<LittleEndian>(d_id)
                 .map_err(DzipError::Io)?;
-            for cid in &f.chunks {
-                header_buffer
-                    .write_u16::<LittleEndian>(*cid)
-                    .map_err(DzipError::Io)?;
-            }
+
+            // Write the single chunk ID
+            header_buffer
+                .write_u16::<LittleEndian>(f.chunk)
+                .map_err(DzipError::Io)?;
+
+            // Write terminator to maintain binary format compatibility
             header_buffer
                 .write_u16::<LittleEndian>(CHUNK_LIST_TERMINATOR)
                 .map_err(DzipError::Io)?;
@@ -217,14 +239,17 @@ impl PackPlan {
         header_buffer
             .write_u16::<LittleEndian>(self.config.chunks.len() as u16)
             .map_err(DzipError::Io)?;
+
         let chunk_table_start = header_buffer.position();
 
-        // Placeholder for chunk table
+        // Placeholder for chunk table (16 bytes per chunk)
         for _ in 0..self.config.chunks.len() {
             for _ in 0..16 {
                 header_buffer.write_u8(0).map_err(DzipError::Io)?;
             }
         }
+
+        // Write split archive filenames if any
         if !self.config.archive_files.is_empty() {
             for fname in &self.config.archive_files {
                 header_buffer
@@ -233,6 +258,8 @@ impl PackPlan {
                 header_buffer.write_u8(0).map_err(DzipError::Io)?;
             }
         }
+
+        // Write Range Settings if applicable (for DZ_RANGE)
         if self.has_dz_chunk {
             if let Some(rs) = &self.config.range_settings {
                 header_buffer.write_u8(rs.win_size).map_err(DzipError::Io)?;
@@ -267,6 +294,7 @@ impl PackPlan {
                 }
             }
         }
+
         writer
             .write_all(header_buffer.get_ref())
             .map_err(DzipError::Io)?;
@@ -284,6 +312,7 @@ impl PackPlan {
         sorted_chunks_def.sort_by_key(|c| c.id);
         info!("Compressing {} chunks ...", sorted_chunks_def.len());
 
+        // Prepare jobs for parallel processing
         let jobs: Result<Vec<CompressionJob>> = sorted_chunks_def
             .iter()
             .enumerate()
@@ -297,8 +326,7 @@ impl PackPlan {
                     source_path: source_path.clone(),
                     offset: *src_offset,
                     read_len: *read_len,
-                    // [Modified] Clone the single flag string
-                    flag: c_def.flags.clone(),
+                    flag: c_def.flag.clone(),
                 })
             })
             .collect();
@@ -311,11 +339,13 @@ impl PackPlan {
             split_writers.keys().map(|k| (*k, 0)).collect();
 
         std::thread::scope(|s| {
+            // Consumer thread: Writes compressed data to disk sequentially
             let writer_handle = s.spawn(move || -> Result<PipelineOutput> {
                 let total_chunks = sorted_chunks_def.len();
                 let mut buffer: HashMap<usize, (NamedTempFile, u64)> = HashMap::new();
                 let mut next_idx = 0;
                 while next_idx < total_chunks {
+                    // Retrieve result from buffer or channel
                     let (mut temp_file, actual_d_len) = if let Some(d) = buffer.remove(&next_idx) {
                         d
                     } else {
@@ -336,7 +366,10 @@ impl PackPlan {
                             }
                         }
                     };
+
                     let c_def = &mut sorted_chunks_def[next_idx];
+
+                    // Determine which writer (main or split) to use
                     let target_writer = if c_def.archive_file_index == 0 {
                         &mut writer0
                     } else {
@@ -349,6 +382,7 @@ impl PackPlan {
                                 ))
                             })?
                     };
+
                     let current_pos = if c_def.archive_file_index == 0 {
                         current_offset_0
                     } else {
@@ -356,11 +390,16 @@ impl PackPlan {
                             .get(&c_def.archive_file_index)
                             .unwrap_or(&0)
                     };
+
+                    // Copy compressed data from temp file to final archive
                     let compressed_size =
                         std::io::copy(&mut temp_file, target_writer).map_err(DzipError::Io)?;
+
+                    // Update Chunk Definition with final offsets and sizes
                     c_def.offset = current_pos;
                     c_def.size_compressed = compressed_size as u32;
                     c_def.size_decompressed = actual_d_len as u32;
+
                     if c_def.archive_file_index == 0 {
                         current_offset_0 += c_def.size_compressed;
                     } else {
@@ -376,12 +415,15 @@ impl PackPlan {
                     }
                     next_idx += 1;
                 }
+
+                // Flush all writers
                 for w in split_writers.values_mut() {
                     w.flush().map_err(DzipError::Io)?;
                 }
                 Ok((sorted_chunks_def, writer0))
             });
 
+            // Producer threads: Compress chunks in parallel
             jobs.par_iter().for_each_with(tx, |s, job| {
                 let res = (|| -> Result<(NamedTempFile, u64)> {
                     let mut f_in = source.open_file(&job.source_path)?;
@@ -395,7 +437,6 @@ impl PackPlan {
                     };
                     let mut temp_file = NamedTempFile::new().map_err(DzipError::Io)?;
 
-                    // [Modified] Encode single flag string
                     let flags_int = encode_flags(&[std::borrow::Cow::Borrowed(job.flag.as_str())]);
 
                     compress(&mut counting_reader, &mut temp_file, flags_int)?;
@@ -427,8 +468,7 @@ impl PackPlan {
                 .write_u32::<LittleEndian>(c.size_decompressed)
                 .map_err(DzipError::Io)?;
 
-            // [Modified] Encode single flag string for the binary header
-            let flags_int = encode_flags(&[std::borrow::Cow::Borrowed(c.flags.as_str())]);
+            let flags_int = encode_flags(&[std::borrow::Cow::Borrowed(c.flag.as_str())]);
             table_buffer
                 .write_u16::<LittleEndian>(flags_int)
                 .map_err(DzipError::Io)?;

@@ -19,10 +19,14 @@ pub struct ArchiveMeta {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileEntry {
+    /// Path relative to the extraction root (OS-specific separators)
     pub path: String,
+    /// Directory path (OS-specific separators)
     pub directory: String,
+    /// Filename without path
     pub filename: String,
-    pub chunks: Vec<u16>,
+    /// The single chunk ID associated with this file
+    pub chunk: u16,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,7 +35,7 @@ pub struct ChunkDef {
     pub offset: u32,
     pub size_compressed: u32,
     pub size_decompressed: u32,
-    pub flags: String,
+    pub flag: String,
     pub archive_file_index: u16,
 }
 

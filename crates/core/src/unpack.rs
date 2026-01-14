@@ -132,6 +132,7 @@ impl ArchiveMetadata {
         for i in 0..count {
             let dir_id = reader.read_u16::<LittleEndian>().map_err(DzipError::Io)? as usize;
             let mut chunk_ids = Vec::new();
+            // Continue reading chunks until terminator is found
             loop {
                 let cid = reader.read_u16::<LittleEndian>().map_err(DzipError::Io)?;
                 if cid == CHUNK_LIST_TERMINATOR {
@@ -234,12 +235,17 @@ impl UnpackPlan {
     ) -> Result<Vec<RawChunk>> {
         let mut chunks = meta.raw_chunks.clone();
         let mut file_chunks_map: HashMap<u16, Vec<usize>> = HashMap::new();
+        // Group chunks by the split file they belong to
         for (idx, c) in chunks.iter().enumerate() {
             file_chunks_map.entry(c.file_idx).or_default().push(idx);
         }
+
+        // Calculate real compressed size (real_c_len) for each chunk
         for (f_idx, c_indices) in file_chunks_map.iter() {
             let mut sorted_indices = c_indices.clone();
             sorted_indices.sort_by_key(|&i| chunks[i].offset);
+
+            // Determine file size to handle the last chunk in the file
             let current_file_size = if *f_idx == 0 {
                 meta.main_file_len
             } else {
@@ -249,6 +255,7 @@ impl UnpackPlan {
                 })?;
                 source.get_split_len(split_name)?
             };
+
             for k in 0..sorted_indices.len() {
                 let idx = sorted_indices[k];
                 let current_offset = chunks[idx].offset;
@@ -257,6 +264,8 @@ impl UnpackPlan {
                 } else {
                     chunks[sorted_indices[k + 1]].offset
                 };
+
+                // If offsets are invalid (e.g. legacy bugs), fallback to header length
                 if next_offset < current_offset {
                     chunks[idx].real_c_len = chunks[idx]._head_c_len;
                 } else {
@@ -281,6 +290,7 @@ impl UnpackPlan {
             .map(|(i, c)| (c.id, i))
             .collect();
 
+        // Parallel extraction of files
         self.metadata.map_entries.par_iter().try_for_each_init(
             HashMap::new,
             |file_cache: &mut HashMap<u16, Box<dyn ReadSeekSend>>, entry| -> Result<()> {
@@ -334,12 +344,15 @@ impl UnpackPlan {
                                 e.insert(f)
                             }
                         };
+
                         source_file
                             .seek(SeekFrom::Start(chunk.offset as u64))
                             .map_err(DzipError::Io)?;
+
                         let mut source_reader =
                             BufReader::with_capacity(DEFAULT_BUFFER_SIZE, source_file)
                                 .take(chunk.real_c_len as u64);
+
                         if let Err(e) =
                             decompress(&mut source_reader, &mut writer, chunk.flags, chunk.d_len)
                         {
@@ -369,7 +382,7 @@ impl UnpackPlan {
     }
 
     pub fn generate_config_struct(&self) -> Result<Config> {
-        let mut toml_files = Vec::new();
+        let mut config_files = Vec::new();
 
         for entry in &self.metadata.map_entries {
             let fname = &self.metadata.user_files[entry.id];
@@ -389,14 +402,18 @@ impl UnpackPlan {
             let full_raw_path = to_native_path(&path_buf);
             let normalized_dir = to_native_path(Path::new(raw_dir));
 
-            toml_files.push(FileEntry {
+            // Map the first chunk ID to the single `chunk` field
+            let chunk_id = *entry.chunk_ids.first().unwrap_or(&0);
+
+            config_files.push(FileEntry {
                 path: full_raw_path,
                 directory: normalized_dir,
                 filename: fname.clone(),
-                chunks: entry.chunk_ids.clone(),
+                chunk: chunk_id,
             });
         }
-        let mut toml_chunks = Vec::new();
+
+        let mut config_chunks = Vec::new();
         let mut sorted_chunks = self.processed_chunks.clone();
         sorted_chunks.sort_by_key(|c| c.id);
 
@@ -404,12 +421,12 @@ impl UnpackPlan {
             let flags_vec = decode_flags(c.flags);
             let flag_str = flags_vec.first().map(|s| s.to_string()).unwrap_or_default();
 
-            toml_chunks.push(ChunkDef {
+            config_chunks.push(ChunkDef {
                 id: c.id,
                 offset: c.offset,
                 size_compressed: c.real_c_len,
                 size_decompressed: c.d_len,
-                flags: flag_str, // Assign String
+                flag: flag_str,
                 archive_file_index: c.file_idx,
             });
         }
@@ -423,8 +440,8 @@ impl UnpackPlan {
             },
             archive_files: self.metadata.split_file_names.clone(),
             range_settings: self.metadata.range_settings.clone(),
-            files: toml_files,
-            chunks: toml_chunks,
+            files: config_files,
+            chunks: config_chunks,
         })
     }
 }
