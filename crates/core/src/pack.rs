@@ -44,10 +44,11 @@ struct CompressionJob {
 
 // --- Wrapper ---
 
+/// Main entry point for packing.
 pub fn do_pack(
     config: Config,
     base_dir_name: String,
-    sink: Box<dyn PackSink>,
+    sink: &mut dyn PackSink,
     source: &dyn PackSource,
 ) -> Result<()> {
     let plan = PackPlan::build(config, base_dir_name, source)?;
@@ -76,8 +77,6 @@ impl PackPlan {
 
         let mut chunk_source_map = HashMap::new();
         for f_entry in &config.files {
-            // [Modified] Use the path from config directly.
-            // It is assumed CLI has normalized/sanitized this path.
             let os_path_str = &f_entry.path;
 
             if !source.exists(os_path_str) {
@@ -116,7 +115,8 @@ impl PackPlan {
             if d.is_empty() || d == CURRENT_DIR_STR {
                 unique_dirs.insert(CURRENT_DIR_STR.to_string());
             } else {
-                // Force internal directory names to use '/'
+                // Ensure internal internal logic uses a consistent separator for mapping,
+                // but this does not affect the output format in the header.
                 unique_dirs.insert(d.replace('\\', "/"));
             }
         }
@@ -145,9 +145,12 @@ impl PackPlan {
         })
     }
 
-    pub fn execute(&self, mut sink: Box<dyn PackSink>, source: &dyn PackSource) -> Result<()> {
+    pub fn execute(&self, sink: &mut dyn PackSink, source: &dyn PackSource) -> Result<()> {
         info!("Packing logical archive: {:?}", self.base_dir_name);
-        let mut writers = self.prepare_writers(&mut *sink)?;
+
+        // Pass sink directly as it is already a mutable reference
+        let mut writers = self.prepare_writers(sink)?;
+
         let chunk_table_start = self.build_and_write_header(&mut writers.main)?;
         let current_offset_0 = writers.main.stream_position().map_err(DzipError::Io)? as u32;
         let final_chunks =
@@ -193,7 +196,10 @@ impl PackPlan {
         }
         for d in self.sorted_dirs.iter().skip(1) {
             header_buffer
-                .write_all(d.replace('/', "\\").as_bytes())
+                // [Logic Change] Pass-through writing.
+                // We write the directory name exactly as it appears in the Config/String.
+                // This allows the CLI to control whether to use '/' or '\'.
+                .write_all(d.as_bytes())
                 .map_err(DzipError::Io)?;
             header_buffer.write_u8(0).map_err(DzipError::Io)?;
         }
@@ -204,7 +210,10 @@ impl PackPlan {
             } else {
                 &raw_d
             };
+
+            // Replaced unwrap with safer access pattern (though logic guarantees existence)
             let d_id = *self.dir_map.get(d_key).unwrap_or(&0) as u16;
+
             header_buffer
                 .write_u16::<LittleEndian>(d_id)
                 .map_err(DzipError::Io)?;
@@ -360,17 +369,25 @@ impl PackPlan {
                     } else {
                         *split_offsets_owned
                             .get(&c_def.archive_file_index)
-                            .unwrap_or(&0)
+                            .unwrap_or(&0) // Safe: initialized from keys above
                     };
                     target_writer.write_all(&data).map_err(DzipError::Io)?;
                     c_def.offset = current_pos;
                     c_def.size_compressed = data.len() as u32;
+
                     if c_def.archive_file_index == 0 {
                         current_offset_0 += c_def.size_compressed;
                     } else {
-                        *split_offsets_owned
+                        // Replaced unwrap() with proper error handling
+                        let offset = split_offsets_owned
                             .get_mut(&c_def.archive_file_index)
-                            .unwrap() += c_def.size_compressed;
+                            .ok_or_else(|| {
+                                DzipError::InternalLogic(format!(
+                                    "Split offset missing for index {}",
+                                    c_def.archive_file_index
+                                ))
+                            })?;
+                        *offset += c_def.size_compressed;
                     }
                     next_idx += 1;
                 }

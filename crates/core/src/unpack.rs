@@ -53,6 +53,8 @@ pub struct RawChunk {
 
 // --- Wrapper ---
 
+/// Main entry point for unpacking.
+/// Uses `&dyn UnpackSink` to allow parallel file creation (thread-safe).
 pub fn do_unpack(
     source: &dyn UnpackSource,
     sink: &dyn UnpackSink,
@@ -100,6 +102,8 @@ impl ArchiveMetadata {
         let mut directories = Vec::with_capacity(num_dirs as usize);
         directories.push(CURRENT_DIR_STR.to_string());
         for _ in 0..(num_dirs - 1) {
+            // [Reverted Logic] We read the raw string as-is (e.g., "textures\ui").
+            // We do NOT normalize to '/' here anymore. The CLI/Sink is responsible for OS adaptation.
             directories.push(read_null_term_string(&mut reader).map_err(DzipError::Io)?);
         }
 
@@ -262,15 +266,20 @@ impl UnpackPlan {
                 } else {
                     CURRENT_DIR_STR
                 };
+                // Construct the relative path. Note: `raw_dir` might contain '\' or '/'.
+                // We pass this raw path to the Sink, which must handle normalization.
                 let rel_path = if raw_dir == CURRENT_DIR_STR || raw_dir.is_empty() {
                     fname.clone()
                 } else {
                     format!("{}/{}", raw_dir, fname)
                 };
 
-                if let Some(last_slash) = rel_path.rfind('/') {
+                // Create directory structure via sink
+                // Note: We scan for both separators to find the parent directory
+                if let Some(last_slash) = rel_path.rfind('/').or_else(|| rel_path.rfind('\\')) {
                     sink.create_dir_all(&rel_path[..last_slash])?;
                 }
+
                 let out_file = sink.create_file(&rel_path)?;
                 let mut writer = BufWriter::with_capacity(DEFAULT_BUFFER_SIZE, out_file);
 
@@ -334,8 +343,6 @@ impl UnpackPlan {
 
     pub fn generate_config_struct(&self) -> Result<Config> {
         let mut toml_files = Vec::new();
-        // Note: Core returns paths with '/' separators.
-        // CLI is responsible for converting to OS separators.
 
         for entry in &self.metadata.map_entries {
             let fname = &self.metadata.user_files[entry.id];
@@ -353,7 +360,7 @@ impl UnpackPlan {
 
             toml_files.push(FileEntry {
                 path: full_raw_path,
-                directory: raw_dir.to_string(), // Fixed conversion
+                directory: raw_dir.to_string(),
                 filename: fname.clone(),
                 chunks: entry.chunk_ids.clone(),
             });

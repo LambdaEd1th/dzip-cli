@@ -53,8 +53,8 @@ pub struct FsUnpackSink {
 
 impl UnpackSink for FsUnpackSink {
     fn create_dir_all(&self, rel_path: &str) -> Result<()> {
-        // Core sends paths with '/', convert to OS separator
-        let os_rel_path = rel_path.replace('/', MAIN_SEPARATOR_STR);
+        // Normalize both '/' and '\' to the OS specific separator (MAIN_SEPARATOR_STR).
+        let os_rel_path = rel_path.replace(['/', '\\'], MAIN_SEPARATOR_STR);
 
         let p = self.output_dir.join(&os_rel_path);
         fs::create_dir_all(&p)
@@ -63,8 +63,8 @@ impl UnpackSink for FsUnpackSink {
     }
 
     fn create_file(&self, rel_path: &str) -> Result<Box<dyn WriteSend>> {
-        // Core sends paths with '/', convert to OS separator
-        let os_rel_path = rel_path.replace('/', MAIN_SEPARATOR_STR);
+        // [Optimization] Collapsed consecutive replace calls.
+        let os_rel_path = rel_path.replace(['/', '\\'], MAIN_SEPARATOR_STR);
 
         let p = self.output_dir.join(&os_rel_path);
         let f = File::create(&p)

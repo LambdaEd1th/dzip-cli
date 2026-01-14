@@ -1,139 +1,114 @@
 # dzip-core
 
-**dzip-core** is the underlying library powering `dzip-cli`, designed for high-performance unpacking and packing of **Marmalade SDK** resource archives (`.dz` / `.dzip`).
+**dzip-core** is the library crate powering `dzip-cli`, providing the fundamental logic for reading, writing, and analyzing **Marmalade SDK** resource archives (`.dz` / `.dzip`).
 
-It exposes a robust, thread-safe API for handling legacy archive formats, supporting multi-volume split archives, directory reconstruction, and various compression algorithms.
+It is designed as a pure **mechanism** layer. It handles the binary format, compression algorithms, and parallel processing, while abstracting filesystem operations via traits (`Source` and `Sink`). This allows it to be used in various contexts (CLI, GUI, or network services) without being tied to `std::fs`.
 
 ## ✨ Features
 
-* **🚀 High Performance**: Built on top of `rayon` for parallel compression and extraction.
-* **🛡️ Safe & Robust**: Handles path sanitization to prevent directory traversal attacks and fixes common legacy header errors (e.g., incorrect ZSIZE).
-* **🧩 Modular Design**: Decoupled UI/Logging via the `DzipObserver` trait.
-* **🗜️ Comprehensive Compression Support**:
-* LZMA (Legacy)
-* ZLIB (Deflate)
+* **🚀 Parallel Processing**: Heavy lifting (compression/decompression) is powered by `rayon`, utilizing a producer-consumer pipeline model for maximum throughput.
+* **🔌 I/O Agnostic**: Built on `PackSource`/`PackSink` and `UnpackSource`/`UnpackSink` traits. The library doesn't enforce how files are read or written—you define the policy.
+* **🛡️ Robust Parsing**: Contains logic to fix legacy header errors (e.g., incorrect ZSIZE fields) and handles multi-volume split archives transparently.
+* **🗜️ Supported Algorithms**:
+* LZMA (Legacy 13-byte header)
+* ZLIB (RFC 1951)
 * BZIP2
-* Store (Copy)
-* Zero-block generation
+* Store (Raw copy)
 
 
 
 ## 📦 Installation
 
-Add `dzip-core` to your `Cargo.toml`.
+Add `dzip-core` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-dzip-core = { path = "crates/core" } # Adjust path if necessary
-# Or if published:
-# dzip-core = "0.2.0"
+dzip-core = { path = "crates/core" }
 
 ```
 
-## 📖 Usage
+## 📖 Architecture & Usage
 
-### 1. Basic Setup
+Unlike traditional libraries that operate directly on paths, `dzip-core` requires the consumer to implement IO traits. This separates the **logic** (parsing/compressing) from the **environment** (filesystem/memory).
 
-Most operations require a `CodecRegistry` (to handle compression algorithms) and a `DzipObserver` (to handle progress feedback).
+### 1. The IO Traits
 
-```rust
-use dzip_core::{create_default_registry, DzipObserver, NoOpObserver};
+Before calling high-level functions, you interact with these traits defined in `dzip_core::io`:
 
-// 1. Create the default codec registry (includes LZMA, ZLIB, BZIP2, etc.)
-let registry = create_default_registry();
+* **`UnpackSource`**: Provides read access to the archive (main file and split volumes).
+* **`UnpackSink`**: Handles the creation of extracted files and directories.
+* **`PackSource`**: Provides read access to the raw files being packed.
+* **`PackSink`**: Handles writing the final archive chunks to the destination.
 
-// 2. Use NoOpObserver if you don't need progress feedback,
-//    or implement your own DzipObserver for custom UI integration.
-let observer = NoOpObserver;
+### 2. Unpacking Example
 
-```
-
-### 2. Unpacking an Archive
-
-Use `do_unpack` to extract a `.dz` file. This function also generates a `.toml` configuration file needed for repacking.
+To unpack an archive, implement `UnpackSource` and `UnpackSink`, then call `do_unpack`.
 
 ```rust
-use std::path::PathBuf;
-use dzip_core::do_unpack;
+use dzip_core::{do_unpack, Result};
+use dzip_core::io::{UnpackSource, UnpackSink, ReadSeekSend, WriteSend};
 
-fn main() -> anyhow::Result<()> {
-    let input = PathBuf::from("assets/data.dz");
-    let output_dir = Some(PathBuf::from("extracted_assets"));
-    let keep_raw = false; // Set to true to dump raw data if decompression fails
-    
-    let registry = dzip_core::create_default_registry();
-    let observer = dzip_core::NoOpObserver;
+// 1. Implement your Source (e.g., reading from FS)
+struct MyFileSource { /* ... */ }
+impl UnpackSource for MyFileSource { /* ... */ }
 
-    // Perform the unpack operation
-    do_unpack(&input, output_dir, keep_raw, &registry, &observer)?;
+// 2. Implement your Sink (e.g., writing to FS)
+struct MyFileSink { /* ... */ }
+impl UnpackSink for MyFileSink { /* ... */ }
+
+fn main() -> Result<()> {
+    let source = MyFileSource::new("assets/data.dz");
+    let sink = MyFileSink::new("output_dir");
+    let keep_raw = false; // Dump raw bytes if decompression fails?
+
+    // 3. Execute logic
+    // Returns a Config struct describing the extracted content
+    let config = do_unpack(&source, &sink, keep_raw)?;
     
-    println!("Unpack successful!");
+    println!("Unpacked {} files.", config.files.len());
     Ok(())
 }
 
 ```
 
-### 3. Packing an Archive
+### 3. Packing Example
 
-Use `do_pack` to create a `.dz` archive based on a TOML configuration file. The packer will look for the source files in the directory relative to the config file.
+To pack files, create a `Config` object (usually generated from the unpack step) and call `do_pack`.
 
 ```rust
-use std::path::PathBuf;
-use dzip_core::do_pack;
+use dzip_core::{do_pack, Result, model::Config};
+use dzip_core::io::{PackSource, PackSink};
 
-fn main() -> anyhow::Result<()> {
-    // Point to the TOML config generated during unpack (or manually created)
-    let config_path = PathBuf::from("extracted_assets/data.toml");
-    
-    let registry = dzip_core::create_default_registry();
-    let observer = dzip_core::NoOpObserver;
+struct MyPackSource { /* ... */ }
+impl PackSource for MyPackSource { /* ... */ }
 
-    // Perform the pack operation
-    do_pack(&config_path, &registry, &observer)?;
+struct MyPackSink { /* ... */ }
+impl PackSink for MyPackSink { /* ... */ }
+
+fn main() -> Result<()> {
+    // 1. Load configuration (e.g., from TOML)
+    let config: Config = load_config("assets/data.toml");
+    let base_name = "data".to_string();
+
+    let source = MyPackSource::new("assets/data/");
+    let mut sink = MyPackSink::new("output_dir/");
+
+    // 2. Execute packing
+    // Note: 'sink' is passed as a mutable reference
+    do_pack(config, base_name, &mut sink, &source)?;
     
-    println!("Pack successful!");
+    println!("Archive created successfully.");
     Ok(())
 }
 
 ```
 
-### 4. Custom Progress Reporting
+## ⚙️ Core Modules
 
-Implement the `DzipObserver` trait to integrate with your application's UI (e.g., CLI progress bars, GUI status bars, or logs).
-
-```rust
-use dzip_core::DzipObserver;
-
-struct MyLogger;
-
-impl DzipObserver for MyLogger {
-    fn info(&self, message: &str) {
-        println!("[INFO] {}", message);
-    }
-
-    fn warn(&self, message: &str) {
-        eprintln!("[WARN] {}", message);
-    }
-
-    fn progress_start(&self, total_items: u64) {
-        println!("Starting processing of {} items...", total_items);
-    }
-
-    fn progress_inc(&self, delta: u64) {
-        // Handle incremental updates (e.g., update a progress bar)
-    }
-
-    fn progress_finish(&self, message: &str) {
-        println!("Finished: {}", message);
-    }
-}
-
-```
-
-## ⚙️ Architecture
-
-* **CodecRegistry**: A plugin-like system where you can register `Compressor` and `Decompressor` implementations.
-* **Parallel Pipeline**: Unpacking uses parallel iterators to extract files, while packing uses a producer-consumer model (parallel compression + sequential writing) to maximize throughput while ensuring file integrity.
+* **`codecs`**: Wrappers for underlying compression libraries (`lzma-rust2`, `flate2`, `bzip2`).
+* **`format`**: Definitions of the `.dz` binary structures, magic numbers, and flags.
+* **`model`**: Structs for the runtime representation of archives (`ArchiveMetadata`, `Config`, `ChunkDef`), fully serializable via Serde.
+* **`io`**: Trait definitions for abstracting input/output operations.
 
 ## 📄 License
 

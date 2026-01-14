@@ -1,5 +1,6 @@
 [package]
 name = "dzip-cli"
+readme = "README.md"
 version = { workspace = true }
 authors = { workspace = true }
 edition = { workspace = true }
@@ -15,4 +16,3 @@ log = { workspace = true }
 toml = "0.9.8"
 clap = { version = "4.5.53", features = ["derive"] }
 env_logger = "0.11"
-indicatif = "0.18.3"

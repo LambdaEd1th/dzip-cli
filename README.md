@@ -1,136 +1,98 @@
-# dzip-cli
+# dzip-rs
 
-**dzip-cli** is a high-performance command-line tool written in Rust, designed for unpacking and packing **Marmalade SDK** resource archives (`.dz` / `.dzip`).
+**dzip-rs** is a modern, high-performance toolkit written in Rust for handling **Marmalade SDK** resource archives (`.dz` and `.dzip`).
 
-It is engineered to provide robust and accurate parsing capabilities, specifically addressing complex issues found in legacy archives, such as compression header correction, implicit directory structure restoration, and split (multi-volume) archive handling.
+This repository is organized as a **Rust Workspace** containing modular components for parsing, analyzing, extracting, and creating archive files. It aims to provide a safe and robust alternative to legacy tools, with a focus on correctness (fixing broken headers) and cross-platform compatibility.
+
+## 📂 Project Structure
+
+The project is divided into two main crates:
+
+| Crate | Path | Description |
+| --- | --- | --- |
+| **dzip-core** | [`crates/core`](https://www.google.com/search?q=crates/core) | The backend library. It handles the binary format parsing, compression algorithms (LZMA, ZLIB, etc.), and parallel processing pipeline. It is I/O agnostic and can be embedded in other applications. |
+| **dzip-cli** | [`crates/cli`](https://www.google.com/search?q=crates/cli) | The terminal frontend. A command-line tool that exposes the core functionality to end-users for unpacking, packing, and listing archive contents. |
 
 ## ✨ Key Features
 
-* **⚡ High Performance & Safety**: Built with Rust to ensure memory safety and blazing fast processing speeds.
-* **📂 Full Unpacking**: Restores original directory structures and files from `.dz` archives to your local disk, automatically handling cross-platform path separators (Windows/Unix).
-* **📦 High-Precision Packing**: Repacks resources into compliant `.dz` files based on auto-generated TOML configuration files, ensuring binary-level control over the archive structure.
-* **🧩 Split Archive Support**: Automatically identifies, reads, and writes multi-volume archives (e.g., `data.dz`, `data.d01`, `data.d02`...).
-* **🔧 Smart Fixes**:
-* **ZSIZE Correction**: Automatically calculates real compressed sizes from chunk offsets, fixing issues where the legacy header reports incorrect sizes.
-* **Directory Restoration**: Handles the implicit root directory logic specific to Marmalade archives.
+* **⚡ Parallel Architecture**: Uses `rayon` to parallelize compression and decompression blocks, ensuring maximum throughput on multi-core systems.
+* **🔧 Legacy Support**: Automatically detects and fixes common errors in old archive headers (e.g., incorrect `ZSIZE` fields) by analyzing chunk offsets.
+* **📦 Split Archives**: Seamlessly handles multi-volume archives (e.g., `data.dz`, `data.d01`...) as a single logical unit.
+* **🐧 Cross-Platform**:
+* **Core**: Preserves raw path data for fidelity.
+* **CLI**: Automatically normalizes path separators (Windows backslashes `\` vs. Unix forward slashes `/`) depending on the user's operating system.
 
 
-* **🗜️ Extensive Compression Support**:
-* ✅ **LZMA** (Legacy format with standard 13-byte headers)
-* ✅ **ZLIB** (Deflate)
-* ✅ **BZIP2**
-* ✅ **COPY** (Store / No compression)
-* ✅ **ZERO** (Zero-block generation)
+* **📄 Configurable**: Uses TOML configuration files to allow precise control over chunk layout and compression methods during packing.
 
+## 🚀 Getting Started
 
+### Prerequisites
 
-## 🛠️ Installation & Build
+* [Rust](https://www.rust-lang.org/tools/install) (latest stable version)
+* Git
 
-Ensure you have [Rust and Cargo](https://rustup.rs/) installed on your system.
+### Building the Workspace
 
-1. **Clone the repository**:
+To build both the library and the CLI tool from the root directory:
+
 ```bash
-git clone https://github.com/your-username/dzip-cli.git
-cd dzip-cli
+# Clone the repository
+git clone https://github.com/your-username/dzip-rs.git
+cd dzip-rs
 
-```
-
-
-2. **Build release version**:
-```bash
+# Build all crates in release mode
 cargo build --release
 
 ```
 
+The compiled binary will be available at:
 
-3. **Run**:
-The compiled binary will be located at `./target/release/dzip-cli` (or `dzip-cli.exe` on Windows).
+* `target/release/dzip-cli` (Linux/macOS)
+* `target/release/dzip-cli.exe` (Windows)
 
-## 📖 Usage
+### Running Tests
 
-### 1. Unpacking
-
-Reads a `.dz` file, extracts its content to a folder, and generates a `.toml` configuration file for repacking.
-
-```bash
-# Basic usage (extracts to a folder named after the input file)
-dzip-cli unpack sample.dz
-
-# Specify a custom output directory
-dzip-cli unpack sample.dz --outdir my_output_folder
-
-# Keep raw compressed data for unsupported chunks (e.g., CHUNK_DZ)
-dzip-cli unpack sample.dz --keep-raw
-
-```
-
-**Output artifacts:**
-
-* `sample/` (Folder): Contains all extracted raw resource files (images, JSONs, etc.).
-* `sample.toml` (File): Contains archive metadata, chunk mapping, and compression parameters.
-
-### 2. Packing
-
-Reads a `.toml` configuration file and the corresponding resource folder, then generates a new `.dz` archive.
+Run the test suite for the entire workspace to ensure integrity:
 
 ```bash
-# Just provide the config file
-dzip-cli pack sample.toml
+cargo test --workspace
 
 ```
 
-> **Note**: The packer automatically looks for a resource folder with the same name as the config file in the same directory (e.g., `sample.toml` corresponds to the `sample/` folder).
+## 📖 Usage Examples
 
-**Output artifacts:**
+Since most users interact with the project via the CLI, here are quick examples. For detailed documentation, please refer to the [CLI README](https://www.google.com/search?q=crates/cli/README.md).
 
-* `sample_packed.dz`: The newly generated archive file.
-* Additional split files (e.g., `sample_packed.d01`) if defined in the configuration.
+```bash
+# Unpack an archive
+./target/release/dzip-cli unpack assets.dz
 
-## ⚙️ Configuration Structure (TOML)
+# List contents without extracting
+./target/release/dzip-cli list assets.dz
 
-The generated TOML file is crucial for repacking. Here is an explanation of its structure:
-
-```toml
-[archive]
-version = 0
-total_files = 12
-total_directories = 4
-total_chunks = 20
-
-# List of split archive filenames (if applicable)
-archive_files = [] 
-
-# File Mapping: Defines the relationship between logical paths and physical chunks
-[[files]]
-path = "textures/background.png"  # Logical path (automatically normalized)
-directory = "textures"            # Parent directory
-filename = "background.png"       # Filename
-chunks = [0, 1]                   # This file consists of Chunk 0 and Chunk 1 stitched together
-
-# Chunk Definitions: Physical properties of data blocks
-[[chunks]]
-id = 0
-offset = 96                       # Offset in the .dz file (auto-calculated during pack)
-size_compressed = 34812           # Compressed size
-size_decompressed = 65536         # Uncompressed size
-flags = ["LZMA"]                  # Compression algorithm flag
-archive_file_index = 0            # Which split file this chunk belongs to (0 is the main file)
+# Repack from a config file
+./target/release/dzip-cli pack assets.toml
 
 ```
 
-## ⚠️ Known Limitations
+## 🤝 Contributing
 
-* **Proprietary DZ Algorithm**: This tool does not currently support the proprietary compression algorithm flagged as `CHUNK_DZ (0x04)` (internal Marmalade format).
-* If encountered during unpacking, the tool will report an error by default.
-* You can use the `--keep-raw` flag to extract the raw (encrypted/compressed) data for further analysis.
+Contributions are welcome! Please follow these steps:
 
+1. **Fork** the repository.
+2. **Create** a feature branch (`git checkout -b feature/amazing-feature`).
+3. **Commit** your changes.
+4. **Push** to the branch.
+5. **Open** a Pull Request.
 
-* **Encryption**: Archives wrapped with DRM or custom encryption layers are not supported.
+Please ensure your code passes `cargo clippy` and `cargo fmt` before submitting.
 
 ## 📄 License
 
-This project is licensed under the **GNU General Public License v3.0 (GPLv3)**.
+This project is licensed under the **GNU General Public License v3.0**.
+See the [LICENSE](https://www.google.com/search?q=LICENSE) file for details.
 
-You may copy, distribute, and modify the software as long as you track changes/dates in source files. Any modifications to or software including (via compiler) GPL-licensed code must also be made available under the GPL along with build & install instructions.
+---
 
 *Marmalade SDK is a trademark of its respective owners.*

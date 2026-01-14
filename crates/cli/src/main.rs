@@ -4,7 +4,7 @@ mod fs;
 use clap::Parser;
 use log::{LevelFilter, info};
 use std::fs as std_fs;
-use std::path::{MAIN_SEPARATOR, Path};
+use std::path::Path;
 
 use args::{Cli, Commands};
 use fs::{FsPackSink, FsPackSource, FsUnpackSink, FsUnpackSource, normalize_path};
@@ -31,9 +31,10 @@ fn main() {
                 keep_raw,
             } => {
                 let base_dir = input.parent().unwrap_or(Path::new(".")).to_path_buf();
+
                 let file_name = input
                     .file_name()
-                    .ok_or_else(|| dzip_core::DzipError::Generic("Invalid filename".into()))?
+                    .ok_or_else(|| dzip_core::DzipError::Generic("Invalid input filename".into()))?
                     .to_string_lossy()
                     .to_string();
 
@@ -42,7 +43,13 @@ fn main() {
                     main_file_name: file_name,
                 };
 
-                let base_stem = input.file_stem().unwrap().to_string_lossy();
+                let base_stem = input
+                    .file_stem()
+                    .ok_or_else(|| {
+                        dzip_core::DzipError::Generic("Input path has no file stem".into())
+                    })?
+                    .to_string_lossy();
+
                 let out_dir = output
                     .clone()
                     .unwrap_or_else(|| std::path::PathBuf::from(base_stem.to_string()));
@@ -51,16 +58,11 @@ fn main() {
                     output_dir: out_dir,
                 };
 
-                // Get Config from Core (Paths are neutral '/')
                 let mut config = do_unpack(&source, &sink, *keep_raw)?;
 
-                // Localize paths for the Config file (CLI Responsibility)
-                let sep = MAIN_SEPARATOR.to_string();
-                if sep != "/" {
-                    for file in &mut config.files {
-                        file.path = file.path.replace('/', &sep);
-                        file.directory = file.directory.replace('/', &sep);
-                    }
+                for file in &mut config.files {
+                    file.path = file.path.replace('\\', "/");
+                    file.directory = file.directory.replace('\\', "/");
                 }
 
                 let toml_str =
@@ -78,34 +80,54 @@ fn main() {
                     dzip_core::DzipError::IoContext(config.display().to_string(), e)
                 })?;
 
-                // 1. Deserialize
                 let mut core_config: Config =
                     toml::from_str(&toml_content).map_err(dzip_core::DzipError::TomlDe)?;
 
-                // 2. Sanitize paths (CLI Responsibility)
                 for file in &mut core_config.files {
+                    // 1. Normalize 'path' for the file system usage.
+                    // normalize_path() removes '..' components.
                     let raw_path = std::path::Path::new(&file.path);
                     let normalized = normalize_path(raw_path);
                     file.path = normalized.to_string_lossy().to_string();
+
+                    // 2. Normalize 'directory' for the archive header.
+                    // Ensure we use forward slashes '/' for internal structure logic,
+                    // which is the standard for most archives and compatible cross-platform.
+                    file.directory = file.directory.replace('\\', "/");
                 }
 
                 let config_parent = config.parent().unwrap_or(Path::new(".")).to_path_buf();
-                let base_name = config.file_stem().unwrap().to_string_lossy().to_string();
+
+                // [Fix] Replaced unwrap() with proper error handling
+                let base_name = config
+                    .file_stem()
+                    .ok_or_else(|| {
+                        dzip_core::DzipError::Generic("Config file path has no stem".into())
+                    })?
+                    .to_string_lossy()
+                    .to_string();
 
                 let source = FsPackSource {
                     root_dir: config_parent.join(&base_name),
                 };
-                let sink = Box::new(FsPackSink {
+
+                let mut sink = FsPackSink {
                     output_dir: config_parent,
                     base_name: base_name.clone(),
-                });
+                };
 
-                do_pack(core_config, base_name, sink, &source)
+                do_pack(core_config, base_name, &mut sink, &source)
             }
 
             Commands::List { input } => {
                 let base_dir = input.parent().unwrap_or(Path::new(".")).to_path_buf();
-                let file_name = input.file_name().unwrap().to_string_lossy().to_string();
+
+                let file_name = input
+                    .file_name()
+                    .ok_or_else(|| dzip_core::DzipError::Generic("Invalid input filename".into()))?
+                    .to_string_lossy()
+                    .to_string();
+
                 let source = FsUnpackSource {
                     base_path: base_dir,
                     main_file_name: file_name,
@@ -117,9 +139,10 @@ fn main() {
                 println!("{:<15} | {:<8} | Path", "Size (Bytes)", "Chunks");
                 println!("{:-<15}-|-{:-<8}-|--------------------------------", "", "");
                 for entry in &entries {
+                    let display_path = entry.path.replace('\\', "/");
                     println!(
                         "{:<15} | {:<8} | {}",
-                        entry.original_size, entry.chunk_count, entry.path
+                        entry.original_size, entry.chunk_count, display_path
                     );
                 }
                 println!("\nTotal files: {}", entries.len());
