@@ -31,7 +31,7 @@ pub struct ChunkDef {
     pub offset: u32,
     pub size_compressed: u32,
     pub size_decompressed: u32,
-    pub flags: Vec<String>,
+    pub flags: String,
     pub archive_file_index: u16,
 }
 

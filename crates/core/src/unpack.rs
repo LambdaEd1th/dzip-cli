@@ -13,9 +13,8 @@ use crate::format::{
 };
 use crate::io::{ReadSeekSend, UnpackSink, UnpackSource};
 use crate::model::{ArchiveMeta, ChunkDef, Config, FileEntry, RangeSettings};
-use crate::utils::{decode_flags, read_null_term_string, to_native_path}; // Changed import
+use crate::utils::{decode_flags, read_null_term_string, to_native_path};
 
-// --- Structures ---
 #[derive(Debug)]
 pub struct ArchiveMetadata {
     pub version: u8,
@@ -51,8 +50,6 @@ pub struct RawChunk {
     pub real_c_len: u32,
 }
 
-// --- Wrapper ---
-
 pub fn do_unpack(
     source: &dyn UnpackSource,
     sink: &dyn UnpackSink,
@@ -65,8 +62,6 @@ pub fn do_unpack(
     info!("Unpack complete. Config object generated.");
     Ok(config)
 }
-
-// --- Implementations ---
 
 impl ArchiveMetadata {
     pub fn load(source: &dyn UnpackSource) -> Result<Self> {
@@ -404,20 +399,21 @@ impl UnpackPlan {
         let mut toml_chunks = Vec::new();
         let mut sorted_chunks = self.processed_chunks.clone();
         sorted_chunks.sort_by_key(|c| c.id);
+
         for c in sorted_chunks {
-            let flags_list = decode_flags(c.flags)
-                .into_iter()
-                .map(|s| s.into_owned())
-                .collect();
+            let flags_vec = decode_flags(c.flags);
+            let flag_str = flags_vec.first().map(|s| s.to_string()).unwrap_or_default();
+
             toml_chunks.push(ChunkDef {
                 id: c.id,
                 offset: c.offset,
                 size_compressed: c.real_c_len,
                 size_decompressed: c.d_len,
-                flags: flags_list,
+                flags: flag_str, // Assign String
                 archive_file_index: c.file_idx,
             });
         }
+
         Ok(Config {
             archive: ArchiveMeta {
                 version: self.metadata.version,
