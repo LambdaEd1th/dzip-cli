@@ -63,7 +63,8 @@ fn main() -> Result<()> {
 
     // 3. Execute logic
     // Returns a Config struct describing the extracted content
-    let config = do_unpack(&source, &sink, keep_raw)?;
+    // The last argument is a progress callback: |event| {}
+    let config = do_unpack(&source, &sink, keep_raw, |_| {})?;
     
     println!("Unpacked {} files.", config.files.len());
     Ok(())
@@ -95,7 +96,8 @@ fn main() -> Result<()> {
 
     // 2. Execute packing
     // Note: 'sink' is passed as a mutable reference
-    do_pack(config, base_name, &mut sink, &source)?;
+    // The last argument is a progress callback
+    do_pack(config, base_name, &mut sink, &source, |_| {})?;
     
     println!("Archive created successfully.");
     Ok(())

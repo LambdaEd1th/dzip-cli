@@ -16,11 +16,13 @@ The project is divided into two main crates:
 ## ✨ Key Features
 
 * **⚡ Parallel Architecture**: Uses `rayon` to parallelize compression and decompression blocks, ensuring maximum throughput on multi-core systems.
+* **📊 Visual Progress**: Built-in progress bars with ETA and speed indicators for long-running operations.
 * **🔧 Legacy Support**: Automatically detects and fixes common errors in old archive headers (e.g., incorrect `ZSIZE` fields) by analyzing chunk offsets.
 * **📦 Split Archives**: Seamlessly handles multi-volume archives (e.g., `data.dz`, `data.d01`...) as a single logical unit.
 * **🐧 Cross-Platform**:
 * **Core**: Preserves raw path data for fidelity.
 * **CLI**: Automatically normalizes path separators (Windows backslashes `\` vs. Unix forward slashes `/`) depending on the user's operating system.
+* **📊 Visual Feedback**: Real-time progress bars for packing and unpacking operations, showing elapsed time, ETA, and processing speed.
 
 
 * **📄 Configurable**: Uses TOML configuration files to allow precise control over chunk layout and compression methods during packing.

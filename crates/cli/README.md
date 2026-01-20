@@ -35,6 +35,8 @@ dzip-cli [OPTIONS] <COMMAND>
 
 * `-v, --verbose`: Enable debug-level logging for detailed output.
 
+> **Note:** Progress bars are displayed by default but may be hidden if verbose logging is enabled or if the output is not a TTY.
+
 ---
 
 ### 1. Unpack
