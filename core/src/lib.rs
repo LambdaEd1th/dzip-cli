@@ -1,6 +1,8 @@
 pub mod error;
 pub mod format;
+pub mod path;
 pub mod reader;
+pub mod volume;
 pub mod writer;
 
 pub use error::{DzipError, Result};

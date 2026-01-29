@@ -314,3 +314,75 @@ pub trait VolumeSource {
     /// Open the volume with the given index (1-based, corresponding to the file list)
     fn open_volume(&mut self, id: u16) -> Result<&mut dyn ReadSeek>;
 }
+
+/// Corrects chunk sizes based on actual file boundaries.
+///
+/// Some archives (like testnew.dz) have incorrect compressed_length headers (e.g., listing uncompressed size).
+/// This function clamps compressed lengths to the available space between chunks or EOF.
+///
+/// # Arguments
+/// * `chunks` - The list of chunks to correct.
+/// * `file_sizes` - specific file sizes mapped by file ID (0 for main, 1+ for volumes).
+pub fn correct_chunk_sizes(
+    chunks: &mut [crate::format::Chunk],
+    file_sizes: &std::collections::HashMap<u16, u64>,
+) {
+    use crate::format::*;
+    let mut chunks_by_file: std::collections::HashMap<u16, Vec<usize>> =
+        std::collections::HashMap::new();
+    for (i, chunk) in chunks.iter().enumerate() {
+        chunks_by_file.entry(chunk.file).or_default().push(i);
+    }
+
+    for (file_id, mut indices) in chunks_by_file {
+        indices.sort_by_key(|&i| chunks[i].offset);
+
+        let file_size = *file_sizes.get(&file_id).unwrap_or(&0);
+
+        for i in 0..indices.len() {
+            let idx = indices[i];
+            let chunk_offset = chunks[idx].offset as u64;
+
+            // Determine the limit (end of region)
+            let limit = if i + 1 < indices.len() {
+                chunks[indices[i + 1]].offset as u64
+            } else {
+                file_size
+            };
+
+            let available = limit.saturating_sub(chunk_offset);
+
+            // If header claims more than available, clamp it.
+            // BMS Logic: If SIZE == ZSIZE (equal lengths) for compressed chunks, it means
+            // the size is unknown/placeholder, so we SHOULD use the available size (next offset - current).
+            let is_compressed =
+                (chunks[idx].flags & (CHUNK_LZMA | CHUNK_ZLIB | CHUNK_BZIP | CHUNK_DZ)) != 0;
+            let equal_sizes = chunks[idx].compressed_length == chunks[idx].decompressed_length;
+
+            if is_compressed && equal_sizes {
+                // Always update to available size (whether larger or smaller)
+                if chunks[idx].compressed_length != available as u32 {
+                    log::debug!(
+                        "Correcting Equal-Size Chunk {} from {} to {} (File {}, Offset {})",
+                        idx,
+                        chunks[idx].compressed_length,
+                        available,
+                        chunks[idx].file,
+                        chunk_offset
+                    );
+                    chunks[idx].compressed_length = available as u32;
+                }
+            } else if (chunks[idx].compressed_length as u64) > available {
+                log::debug!(
+                    "Correcting Chunk {} size from {} to {} (File {}, Offset {})",
+                    idx,
+                    chunks[idx].compressed_length,
+                    available,
+                    chunks[idx].file,
+                    chunk_offset
+                );
+                chunks[idx].compressed_length = available as u32;
+            }
+        }
+    }
+}

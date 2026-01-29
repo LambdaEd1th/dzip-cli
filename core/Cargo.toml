@@ -10,5 +10,5 @@ bzip2 = "0.6.1"
 flate2 = "1.1.8"
 lzma-rs = "0.3.0"
 thiserror = "2.0.18"
-log = "0.4"
-serde = { version = "1.0.228", features = ["derive"] }
+log.workspace = true
+serde.workspace = true
